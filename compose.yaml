@@ -1,0 +1,31 @@
+services:
+  runner:
+    build:
+      context: .
+      dockerfile: runner/Dockerfile
+    image: local-actions-runner-manager:local
+    container_name: ${RUNNER_NAME:-home-runner-01}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:?set GITHUB_REPOSITORY in .env}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:?set GITHUB_TOKEN in .env}
+      RUNNER_NAME: ${RUNNER_NAME:-home-runner-01}
+      RUNNER_LABELS: ${RUNNER_LABELS:-lan,docker,home}
+      RUNNER_GROUP: ${RUNNER_GROUP:-Default}
+      RUNNER_WORKDIR: ${RUNNER_WORKDIR:-_work}
+      RUNNER_EPHEMERAL: ${RUNNER_EPHEMERAL:-false}
+    volumes:
+      - runner-data:/runner/_work
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f Runner.Listener >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  runner-data:
