@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-required=(GITHUB_OWNER GITHUB_TOKEN RUNNER_NAME)
+required=(GITHUB_REPOSITORY GITHUB_TOKEN RUNNER_NAME)
 for name in "${required[@]}"; do
   if [[ -z "${!name:-}" ]]; then
     echo "ERROR: ${name} is required" >&2
@@ -9,12 +9,17 @@ for name in "${required[@]}"; do
   fi
 done
 
+if [[ ! "$GITHUB_REPOSITORY" =~ ^[^/]+/[^/]+$ ]]; then
+  echo "ERROR: GITHUB_REPOSITORY must use owner/repository format" >&2
+  exit 1
+fi
+
 RUNNER_LABELS="${RUNNER_LABELS:-lan,docker,home}"
 RUNNER_GROUP="${RUNNER_GROUP:-Default}"
 RUNNER_WORKDIR="${RUNNER_WORKDIR:-_work}"
 RUNNER_EPHEMERAL="${RUNNER_EPHEMERAL:-false}"
-API_URL="https://api.github.com/user"
-OWNER_URL="https://github.com/${GITHUB_OWNER}"
+API_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+REPO_URL="https://github.com/${GITHUB_REPOSITORY}"
 TOKEN_HEADER="Authorization: Bearer ${GITHUB_TOKEN}"
 API_HEADER="X-GitHub-Api-Version: 2022-11-28"
 
@@ -44,7 +49,7 @@ registration_token="$(api_post actions/runners/registration-token | jq -er '.tok
 config_args=(
   --unattended
   --replace
-  --url "$OWNER_URL"
+  --url "$REPO_URL"
   --token "$registration_token"
   --name "$RUNNER_NAME"
   --work "$RUNNER_WORKDIR"
