@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTANCES_DIR="${ROOT_DIR}/instances"
+GLOBAL_ENV="${ROOT_DIR}/.env"
+COMPOSE_FILE="${ROOT_DIR}/compose.yaml"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./runnerctl create <name> <owner/repository>
+  ./runnerctl start <name>
+  ./runnerctl stop <name>
+  ./runnerctl restart <name>
+  ./runnerctl logs <name>
+  ./runnerctl status [name]
+  ./runnerctl list
+  ./runnerctl start-all
+  ./runnerctl stop-all
+  ./runnerctl remove <name>
+
+Global secrets and proxy settings live in .env.
+Per-project settings live in instances/<name>.env.
+EOF
+}
+
+require_global_env() {
+  if [[ ! -f "$GLOBAL_ENV" ]]; then
+    echo "ERROR: missing ${GLOBAL_ENV}. Run: cp .env.example .env" >&2
+    exit 1
+  fi
+}
+
+instance_file() {
+  printf '%s/%s.env' "$INSTANCES_DIR" "$1"
+}
+
+require_instance() {
+  local file
+  file="$(instance_file "$1")"
+  if [[ ! -f "$file" ]]; then
+    echo "ERROR: missing instance configuration: ${file}" >&2
+    exit 1
+  fi
+}
+
+compose_instance() {
+  local name="$1"
+  shift
+  require_global_env
+  require_instance "$name"
+  docker compose \
+    --project-name "runner-${name}" \
+    --env-file "$GLOBAL_ENV" \
+    --env-file "$(instance_file "$name")" \
+    --file "$COMPOSE_FILE" \
+    "$@"
+}
+
+list_names() {
+  mkdir -p "$INSTANCES_DIR"
+  find "$INSTANCES_DIR" -maxdepth 1 -type f -name '*.env' ! -name 'example.env' -print \
+    | sed 's#.*/##; s/\.env$//' \
+    | sort
+}
+
+create_instance() {
+  local name="${1:?instance name required}"
+  local repository="${2:?repository required in owner/repository format}"
+  local file
+
+  if [[ ! "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+    echo "ERROR: invalid instance name: ${name}" >&2
+    exit 1
+  fi
+  if [[ ! "$repository" =~ ^[^/]+/[^/]+$ ]]; then
+    echo "ERROR: repository must use owner/repository format" >&2
+    exit 1
+  fi
+
+  mkdir -p "$INSTANCES_DIR"
+  file="$(instance_file "$name")"
+  if [[ -e "$file" ]]; then
+    echo "ERROR: instance already exists: ${file}" >&2
+    exit 1
+  fi
+
+  cat >"$file" <<EOF
+GITHUB_REPOSITORY=${repository}
+RUNNER_NAME=home-${name}-runner
+RUNNER_LABELS=lan,docker,home,${name}
+RUNNER_GROUP=Default
+RUNNER_WORKDIR=_work
+RUNNER_EPHEMERAL=false
+EOF
+  chmod 600 "$file"
+  echo "Created ${file}"
+}
+
+status_all() {
+  local found=false name
+  printf '%-24s %-42s %s\n' INSTANCE REPOSITORY STATUS
+  while IFS= read -r name; do
+    found=true
+    local repo status
+    repo="$(sed -n 's/^GITHUB_REPOSITORY=//p' "$(instance_file "$name")" | head -n1)"
+    status="$(compose_instance "$name" ps --format '{{.Status}}' 2>/dev/null | head -n1 || true)"
+    [[ -n "$status" ]] || status="stopped"
+    printf '%-24s %-42s %s\n' "$name" "$repo" "$status"
+  done < <(list_names)
+  if [[ "$found" == false ]]; then
+    echo "No instances configured."
+  fi
+}
+
+run_all() {
+  local action="$1" name found=false
+  while IFS= read -r name; do
+    found=true
+    echo "==> ${action}: ${name}"
+    case "$action" in
+      start) compose_instance "$name" up --detach --build ;;
+      stop) compose_instance "$name" down ;;
+    esac
+  done < <(list_names)
+  if [[ "$found" == false ]]; then
+    echo "No instances configured."
+  fi
+}
+
+command="${1:-help}"
+shift || true
+
+case "$command" in
+  create) create_instance "$@" ;;
+  start)
+    name="${1:?instance name required}"
+    compose_instance "$name" up --detach --build
+    compose_instance "$name" ps
+    ;;
+  stop)
+    name="${1:?instance name required}"
+    compose_instance "$name" down
+    ;;
+  restart)
+    name="${1:?instance name required}"
+    compose_instance "$name" down
+    compose_instance "$name" up --detach --build
+    ;;
+  logs)
+    name="${1:?instance name required}"
+    compose_instance "$name" logs --follow --tail=100
+    ;;
+  status)
+    if [[ $# -gt 0 ]]; then
+      compose_instance "$1" ps
+    else
+      status_all
+    fi
+    ;;
+  list) status_all ;;
+  start-all) run_all start ;;
+  stop-all) run_all stop ;;
+  remove)
+    name="${1:?instance name required}"
+    compose_instance "$name" down --volumes
+    rm -f "$(instance_file "$name")"
+    echo "Removed instance: ${name}"
+    ;;
+  help|-h|--help) usage ;;
+  *)
+    echo "ERROR: unknown command: ${command}" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
