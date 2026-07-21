@@ -10,7 +10,7 @@ services:
     env_file:
       - .env
     environment:
-      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:?set GITHUB_REPOSITORY in .env}
+      GITHUB_OWNER: ${GITHUB_OWNER:?set GITHUB_OWNER in .env}
       GITHUB_TOKEN: ${GITHUB_TOKEN:?set GITHUB_TOKEN in .env}
       RUNNER_NAME: ${RUNNER_NAME:-home-runner-01}
       RUNNER_LABELS: ${RUNNER_LABELS:-lan,docker,home}
