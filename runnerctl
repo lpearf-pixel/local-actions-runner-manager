@@ -55,19 +55,25 @@ compose_instance() {
   require_global_env
   require_instance "$name"
 
-  local merged_env
-  merged_env="$(mktemp "${TMPDIR:-/tmp}/runner-${name}.XXXXXX.env")"
+  local temp_dir merged_env result
+  temp_dir="${TMPDIR:-/tmp}"
+  temp_dir="${temp_dir%/}"
+  merged_env="$(mktemp "${temp_dir}/runner-${name}.XXXXXX")"
   chmod 600 "$merged_env"
+
   cat "$GLOBAL_ENV" > "$merged_env"
   printf '\n' >> "$merged_env"
   cat "$(instance_file "$name")" >> "$merged_env"
 
+  set +e
   docker compose \
     --project-name "runner-${name}" \
     --env-file "$merged_env" \
     --file "$COMPOSE_FILE" \
     "$@"
-  local result=$?
+  result=$?
+  set -e
+
   rm -f "$merged_env"
   return "$result"
 }
