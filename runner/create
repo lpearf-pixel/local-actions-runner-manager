@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+NAME="${1:?instance name required}"
+REPO="${2:?repository required (owner/repo)}"
+
+mkdir -p "instances/${NAME}"
+
+cat > "instances/${NAME}/.env" <<EOF
+GITHUB_REPOSITORY=${REPO}
+GITHUB_TOKEN=replace_me
+RUNNER_NAME=home-${NAME}-runner
+RUNNER_LABELS=lan,docker,home,${NAME}
+RUNNER_GROUP=Default
+RUNNER_WORKDIR=_work
+RUNNER_EPHEMERAL=false
+EOF
+
+cp compose.yaml "instances/${NAME}/compose.yaml"
+
+echo "Created instance: instances/${NAME}"
