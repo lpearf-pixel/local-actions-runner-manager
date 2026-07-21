@@ -1,7 +1,7 @@
 FROM ubuntu:24.04
 
 ARG TARGETARCH
-ARG RUNNER_VERSION=2.328.0
+ARG RUNNER_VERSION=""
 
 ENV DEBIAN_FRONTEND=noninteractive \
     RUNNER_HOME=/runner
@@ -16,6 +16,12 @@ RUN apt-get update \
          arm64) RUNNER_ARCH=arm64 ;; \
          *) echo "Unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
        esac \
+    && if [ -z "$RUNNER_VERSION" ]; then \
+         RUNNER_VERSION="$(curl --fail --silent --show-error --location --retry 3 \
+           https://api.github.com/repos/actions/runner/releases/latest \
+           | jq -er '.tag_name | ltrimstr("v")')"; \
+       fi \
+    && echo "Installing GitHub Actions runner ${RUNNER_VERSION} for ${RUNNER_ARCH}" \
     && curl --fail --location --retry 3 \
        "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz" \
        --output /tmp/actions-runner.tar.gz \
