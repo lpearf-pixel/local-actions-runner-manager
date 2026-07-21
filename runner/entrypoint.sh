@@ -25,7 +25,7 @@ if [[ -S /var/run/docker.sock ]]; then
   fi
   socket_group="$(getent group "$socket_gid" | cut -d: -f1)"
   usermod -aG "$socket_group" runner
-done
+fi
 
 mkdir -p "/runner/${RUNNER_WORKDIR}"
 chown -R runner:runner "/runner/${RUNNER_WORKDIR}"
@@ -64,7 +64,8 @@ cleanup() {
   if [[ -n "$removal_token" ]]; then
     gosu runner ./config.sh remove --unattended --token "$removal_token" || true
   fi
-g}
+}
+
 trap cleanup EXIT INT TERM
 
 gosu runner ./run.sh &
