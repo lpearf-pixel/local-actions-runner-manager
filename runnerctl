@@ -30,6 +30,10 @@ require_global_env() {
     echo "ERROR: missing ${GLOBAL_ENV}. Run: cp .env.example .env" >&2
     exit 1
   fi
+  if ! grep -Eq '^GITHUB_TOKEN=.+$' "$GLOBAL_ENV"; then
+    echo "ERROR: GITHUB_TOKEN must be set in ${GLOBAL_ENV}" >&2
+    exit 1
+  fi
 }
 
 instance_file() {
@@ -50,12 +54,22 @@ compose_instance() {
   shift
   require_global_env
   require_instance "$name"
+
+  local merged_env
+  merged_env="$(mktemp "${TMPDIR:-/tmp}/runner-${name}.XXXXXX.env")"
+  chmod 600 "$merged_env"
+  cat "$GLOBAL_ENV" > "$merged_env"
+  printf '\n' >> "$merged_env"
+  cat "$(instance_file "$name")" >> "$merged_env"
+
   docker compose \
     --project-name "runner-${name}" \
-    --env-file "$GLOBAL_ENV" \
-    --env-file "$(instance_file "$name")" \
+    --env-file "$merged_env" \
     --file "$COMPOSE_FILE" \
     "$@"
+  local result=$?
+  rm -f "$merged_env"
+  return "$result"
 }
 
 list_names() {
