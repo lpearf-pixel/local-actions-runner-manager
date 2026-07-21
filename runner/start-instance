@@ -1,16 +1,4 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-
-NAME="${1:?instance name required}"
-DIR="instances/${NAME}"
-
-if [[ ! -d "$DIR" ]]; then
-  echo "Missing instance: $DIR" >&2
-  exit 1
-fi
-
-cd "$DIR"
-
-docker compose up -d --build
-
-echo "Started runner instance: ${NAME}"
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+exec ./runnerctl start "$@"
