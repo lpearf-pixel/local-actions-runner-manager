@@ -17,6 +17,10 @@ services:
       RUNNER_GROUP: ${RUNNER_GROUP:-Default}
       RUNNER_WORKDIR: ${RUNNER_WORKDIR:-_work}
       RUNNER_EPHEMERAL: ${RUNNER_EPHEMERAL:-false}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      http_proxy: ${HTTP_PROXY:-}
+      https_proxy: ${HTTPS_PROXY:-}
     volumes:
       - runner-data:/runner/_work
       - /var/run/docker.sock:/var/run/docker.sock
