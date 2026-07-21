@@ -1,5 +1,7 @@
 .env
 .env.*
 !.env.example
+instances/*.env
+!instances/example.env
 runner-data/
 .DS_Store
