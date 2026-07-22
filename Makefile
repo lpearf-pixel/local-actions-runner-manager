@@ -3,13 +3,14 @@ RUNNERCTL := bash ./runnerctl
 NAME ?=
 REPO ?=
 
-.PHONY: help setup create start stop restart logs status list start-all stop-all clean doctor remove
+.PHONY: help setup sync create start stop restart logs status list start-all stop-all clean doctor remove
 
 help:
 	@echo "Local Actions Runner Manager"
 	@echo
 	@echo "Commands that do not require chmod:"
 	@echo "  make setup"
+	@echo "  make sync"
 	@echo "  make create NAME=chan-shuo REPO=lpearf-pixel/chan-shuo"
 	@echo "  make start NAME=chan-shuo"
 	@echo "  make stop NAME=chan-shuo"
@@ -25,6 +26,9 @@ help:
 
 setup:
 	@$(RUNNERCTL) setup
+
+sync:
+	@$(RUNNERCTL) sync
 
 create:
 	@test -n "$(NAME)" || (echo "ERROR: NAME is required" >&2; exit 1)
