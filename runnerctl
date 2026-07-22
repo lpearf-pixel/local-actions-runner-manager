@@ -16,24 +16,29 @@ Usage:
   bash ./runnerctl logs <name>
   bash ./runnerctl status [name]
   bash ./runnerctl list
+  bash ./runnerctl compose <name> <docker-compose-args...>
   bash ./runnerctl start-all
   bash ./runnerctl stop-all
   bash ./runnerctl clean [name]
   bash ./runnerctl doctor <name>
+  bash ./runnerctl repair-permissions
   bash ./runnerctl remove <name>
   bash ./runnerctl setup
   bash ./runnerctl sync
 
 Global secrets and proxy settings live in .env.
 Per-project settings live in instances/<name>.env.
-Use the Makefile commands when executable bits are unavailable, for example:
-  make start NAME=chan-shuo
+Invoke through bash so executable file permissions are not required.
 EOF
 }
 
 require_global_env() {
   if [[ ! -f "$GLOBAL_ENV" ]]; then
     echo "ERROR: missing ${GLOBAL_ENV}. Run: cp .env.example .env" >&2
+    exit 1
+  fi
+  if [[ ! -r "$GLOBAL_ENV" ]]; then
+    echo "ERROR: ${GLOBAL_ENV} is not readable. Run: bash ./runnerctl repair-permissions" >&2
     exit 1
   fi
   if ! grep -Eq '^GITHUB_TOKEN=.+$' "$GLOBAL_ENV"; then
@@ -53,12 +58,17 @@ require_instance() {
     echo "ERROR: missing instance configuration: ${file}" >&2
     exit 1
   fi
+  if [[ ! -r "$file" ]]; then
+    echo "ERROR: instance configuration is not readable: ${file}" >&2
+    echo "Run: bash ./runnerctl repair-permissions" >&2
+    exit 1
+  fi
 }
 
 env_value() {
   local file="$1"
   local key="$2"
-  [[ -f "$file" ]] || return 0
+  [[ -f "$file" && -r "$file" ]] || return 0
   sed -n "s/^${key}=//p" "$file" | tail -n 1
 }
 
@@ -70,6 +80,26 @@ instance_container_name() {
     printf '%s' "$configured"
   else
     printf 'home-%s-runner' "$name"
+  fi
+}
+
+container_status() {
+  local container="$1"
+  local state health
+
+  if ! docker inspect "$container" >/dev/null 2>&1; then
+    printf 'not-created'
+    return 0
+  fi
+
+  state="$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || true)"
+  [[ -n "$state" ]] || state="unknown"
+
+  health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container" 2>/dev/null || true)"
+  if [[ -n "$health" ]]; then
+    printf '%s (%s)' "$state" "$health"
+  else
+    printf '%s' "$state"
   fi
 }
 
@@ -134,12 +164,14 @@ create_instance() {
   fi
 
   mkdir -p "$INSTANCES_DIR"
+  chmod 700 "$INSTANCES_DIR" 2>/dev/null || true
   file="$(instance_file "$name")"
   if [[ -e "$file" ]]; then
     echo "ERROR: instance already exists: ${file}" >&2
     exit 1
   fi
 
+  umask 077
   cat >"$file" <<EOF
 GITHUB_REPOSITORY=${repository}
 RUNNER_NAME=home-${name}-runner
@@ -153,14 +185,23 @@ EOF
 }
 
 status_all() {
-  local found=false name
+  local found=false name file repo container status
   printf '%-24s %-42s %s\n' INSTANCE REPOSITORY STATUS
   while IFS= read -r name; do
     found=true
-    local repo status
-    repo="$(env_value "$(instance_file "$name")" GITHUB_REPOSITORY)"
-    status="$(compose_instance "$name" ps --format '{{.Status}}' 2>/dev/null | head -n1 || true)"
-    [[ -n "$status" ]] || status="stopped"
+    file="$(instance_file "$name")"
+    container="home-${name}-runner"
+
+    if [[ ! -r "$file" ]]; then
+      repo="permission-denied"
+      status="$(container_status "$container")"
+    else
+      repo="$(env_value "$file" GITHUB_REPOSITORY)"
+      [[ -n "$repo" ]] || repo="unknown"
+      container="$(instance_container_name "$name")"
+      status="$(container_status "$container")"
+    fi
+
     printf '%-24s %-42s %s\n' "$name" "$repo" "$status"
   done < <(list_names)
   if [[ "$found" == false ]]; then
@@ -244,17 +285,18 @@ doctor_instance() {
     return 1
   fi
 
-  if [[ -f "$GLOBAL_ENV" ]] && grep -Eq '^GITHUB_TOKEN=.+$' "$GLOBAL_ENV"; then
+  if [[ -f "$GLOBAL_ENV" && -r "$GLOBAL_ENV" ]] && grep -Eq '^GITHUB_TOKEN=.+$' "$GLOBAL_ENV"; then
     print_check true "Global GITHUB_TOKEN is configured"
   else
-    print_check false "Global GITHUB_TOKEN is configured"
+    print_check false "Global GITHUB_TOKEN is configured and readable"
     failed=true
   fi
 
-  if [[ -f "$(instance_file "$name")" ]]; then
-    print_check true "Instance configuration exists"
+  if [[ -f "$(instance_file "$name")" && -r "$(instance_file "$name")" ]]; then
+    print_check true "Instance configuration exists and is readable"
   else
-    print_check false "Instance configuration exists"
+    print_check false "Instance configuration exists and is readable"
+    echo "Hint: bash ./runnerctl repair-permissions"
     return 1
   fi
 
@@ -315,10 +357,65 @@ doctor_instance() {
   [[ "$failed" == false ]]
 }
 
+repair_permissions() {
+  local current_user current_group needs_sudo=false file
+  current_user="$(id -un)"
+  current_group="$(id -gn)"
+
+  mkdir -p "$INSTANCES_DIR" 2>/dev/null || true
+
+  if [[ -e "$GLOBAL_ENV" && ! -O "$GLOBAL_ENV" ]]; then
+    needs_sudo=true
+  fi
+  if [[ -e "$INSTANCES_DIR" && ! -O "$INSTANCES_DIR" ]]; then
+    needs_sudo=true
+  fi
+
+  shopt -s nullglob
+  for file in "$INSTANCES_DIR"/*.env; do
+    if [[ ! -O "$file" ]]; then
+      needs_sudo=true
+      break
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ "$needs_sudo" == true ]]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+      echo "ERROR: sudo is required to repair root-owned instance files" >&2
+      return 1
+    fi
+    echo "Repairing ownership for runner configuration files..."
+    sudo chown "$current_user:$current_group" "$INSTANCES_DIR"
+    sudo chown -R "$current_user:$current_group" "$INSTANCES_DIR"
+    if [[ -e "$GLOBAL_ENV" ]]; then
+      sudo chown "$current_user:$current_group" "$GLOBAL_ENV"
+    fi
+  fi
+
+  chmod 700 "$INSTANCES_DIR"
+  shopt -s nullglob
+  for file in "$INSTANCES_DIR"/*.env; do
+    chmod 600 "$file"
+  done
+  shopt -u nullglob
+  if [[ -e "$GLOBAL_ENV" ]]; then
+    chmod 600 "$GLOBAL_ENV"
+  fi
+
+  echo "Runner configuration permissions repaired."
+  ls -ld "$INSTANCES_DIR"
+  shopt -s nullglob
+  for file in "$INSTANCES_DIR"/*.env; do
+    ls -l "$file"
+  done
+  shopt -u nullglob
+}
+
 setup_repository() {
   git -C "$ROOT_DIR" config core.fileMode false
   echo "Configured this checkout to ignore local executable-bit noise."
-  echo "Use Makefile commands such as: make start NAME=chan-shuo"
+  echo "Use: bash ./runnerctl <command>"
 }
 
 sync_repository() {
@@ -352,16 +449,25 @@ case "$command" in
     ;;
   status)
     if [[ $# -gt 0 ]]; then
-      compose_instance "$1" ps
+      name="$1"
+      container="$(instance_container_name "$name")"
+      printf '%s\t%s\n' "$container" "$(container_status "$container")"
     else
       status_all
     fi
     ;;
   list) status_all ;;
+  compose)
+    name="${1:?instance name required}"
+    shift
+    [[ $# -gt 0 ]] || { echo "ERROR: docker compose arguments are required" >&2; exit 1; }
+    compose_instance "$name" "$@"
+    ;;
   start-all) run_all start ;;
   stop-all) run_all stop ;;
   clean) clean_command "${1:-}" ;;
   doctor) doctor_instance "${1:?instance name required}" ;;
+  repair-permissions) repair_permissions ;;
   setup) setup_repository ;;
   sync) sync_repository ;;
   remove)
