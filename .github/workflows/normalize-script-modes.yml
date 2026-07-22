@@ -9,6 +9,7 @@ on:
       - runnerctl
       - runner/**
       - scripts/**
+      - tests/**
       - Makefile
       - compose.yaml
       - .github/workflows/normalize-script-modes.yml
@@ -36,13 +37,21 @@ jobs:
 
           while IFS= read -r file; do
             bash -n "$file"
-          done < <(find scripts -type f -name '*.sh' -print | sort)
+          done < <(find scripts tests -type f -name '*.sh' -print | sort)
 
           for file in runner/create runner/start-instance; do
             if [[ -f "$file" ]]; then
               bash -n "$file"
             fi
           done
+
+      - name: Run manager regression tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          while IFS= read -r file; do
+            bash "$file"
+          done < <(find tests -type f -name '*.test.sh' -print | sort)
 
       - name: Mark command scripts executable in Git
         shell: bash
