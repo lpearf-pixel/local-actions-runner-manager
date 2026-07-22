@@ -75,26 +75,51 @@ api_post() {
     "${API_URL}/${endpoint}"
 }
 
-registration_token="$(api_post actions/runners/registration-token | jq -er '.token')"
+configure_runner() {
+  local registration_token
+  local -a config_args
 
-config_args=(
-  --unattended
-  --replace
-  --url "$REPO_URL"
-  --token "$registration_token"
-  --name "$RUNNER_NAME"
-  --work "$RUNNER_WORKDIR"
-  --labels "$RUNNER_LABELS"
-  --runnergroup "$RUNNER_GROUP"
-)
+  if [[ -f .runner && -f .credentials ]]; then
+    echo "Reusing existing runner configuration for ${RUNNER_NAME}."
+    return 0
+  fi
 
-if [[ "$RUNNER_EPHEMERAL" == "true" ]]; then
-  config_args+=(--ephemeral)
-fi
+  if [[ -f .runner || -f .credentials ]]; then
+    echo "ERROR: partial runner configuration detected in /runner" >&2
+    echo "Remove the instance container and recreate it before retrying." >&2
+    ls -la .runner .credentials 2>/dev/null || true
+    exit 1
+  fi
 
-gosu runner ./config.sh "${config_args[@]}"
+  registration_token="$(api_post actions/runners/registration-token | jq -er '.token')"
+
+  config_args=(
+    --unattended
+    --replace
+    --url "$REPO_URL"
+    --token "$registration_token"
+    --name "$RUNNER_NAME"
+    --work "$RUNNER_WORKDIR"
+    --labels "$RUNNER_LABELS"
+    --runnergroup "$RUNNER_GROUP"
+  )
+
+  if [[ "$RUNNER_EPHEMERAL" == "true" ]]; then
+    config_args+=(--ephemeral)
+  fi
+
+  gosu runner ./config.sh "${config_args[@]}"
+}
+
+configure_runner
 
 cleanup() {
+  local removal_token
+
+  if [[ ! -f .runner || ! -f .credentials ]]; then
+    return 0
+  fi
+
   echo "Removing runner registration..."
   removal_token="$(api_post actions/runners/remove-token | jq -er '.token' || true)"
   if [[ -n "$removal_token" ]]; then
