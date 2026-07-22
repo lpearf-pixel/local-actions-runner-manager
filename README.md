@@ -1,107 +1,196 @@
 # Local Actions Runner Manager
 
-Docker Compose deployment for a repository-scoped GitHub Actions self-hosted runner on a home or office LAN computer.
+Docker Compose manager for multiple repository-scoped GitHub Actions self-hosted runners on one home or office computer.
 
-> A runner inside Docker Desktop is a **Linux runner**, even when Docker Desktop runs on macOS. Do not label it as a macOS runner.
+> A runner inside Docker Desktop is a Linux runner, even when Docker Desktop runs on macOS.
 
 ## Features
 
-- Supports Docker hosts using `amd64` or `arm64`
-- Downloads the matching current GitHub Actions runner during image build
-- Requests a short-lived registration token at startup
-- Unregisters the runner on graceful shutdown
-- Persists the Actions work directory
-- Supports Docker-based jobs through the host Docker socket
-- Includes local validation and a manual smoke-test workflow
+- One isolated Compose project per GitHub repository
+- One shared root `.env` for GitHub token and proxy settings
+- One `instances/<name>.env` file per repository
+- `amd64` and `arm64` runner images
+- Automatic runner registration and graceful unregistration
+- Docker socket support for workflows that build containers
+- macOS-compatible temporary-file handling
+- `clean` and `doctor` diagnostics
+- Makefile commands that do not depend on executable file permissions
 
-## 1. Requirements
+## Requirements
 
 Install Docker Desktop or Docker Engine on the computer that will execute jobs.
 
 Create a GitHub token that can manage repository self-hosted runners. Store it only in `.env` and never commit it.
 
-For a fine-grained personal access token, grant the target repository `Administration: Read and write`. For a classic token on a private repository, use the `repo` scope.
+For a fine-grained personal access token, grant each target repository `Administration: Read and write`. For a classic token on a private repository, use the `repo` scope.
 
-## 2. Configure
+## Configure shared settings
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit the root `.env`:
 
 ```dotenv
-GITHUB_REPOSITORY=lpearf-pixel/example-repository
 GITHUB_TOKEN=github_pat_xxx
-RUNNER_NAME=home-runner-01
-RUNNER_LABELS=lan,docker,home
+
+HTTP_PROXY=http://192.168.2.28:8001
+HTTPS_PROXY=http://192.168.2.28:8001
+NO_PROXY=localhost,127.0.0.1,host.docker.internal
+
 RUNNER_GROUP=Default
+RUNNER_WORKDIR=_work
+RUNNER_EPHEMERAL=false
+RUNNER_LABELS=lan,docker,home
 ```
 
-`GITHUB_REPOSITORY` is the repository whose workflows will use this runner. It does not have to be this manager repository.
+The token and proxy are shared by all configured runner instances.
 
-## 3. Start
+## Recommended command interface
+
+Use `make` commands. They invoke `bash ./runnerctl` internally, so no `chmod` is required after cloning or pulling.
+
+One-time setup for an existing checkout:
 
 ```bash
-./scripts/start.sh
+git config core.fileMode false
+git restore runnerctl scripts runner 2>/dev/null || true
+git pull --ff-only
+make setup
+```
+
+Create and start a runner:
+
+```bash
+make create NAME=chan-shuo REPO=lpearf-pixel/chan-shuo
+make start NAME=chan-shuo
 ```
 
 Check it:
 
 ```bash
-./scripts/status.sh
-./scripts/logs.sh
+make status NAME=chan-shuo
+make doctor NAME=chan-shuo
+make logs NAME=chan-shuo
 ```
 
-GitHub displays the runner under `Repository → Settings → Actions → Runners`.
+GitHub displays the runner under:
 
-## 4. Use it from another LAN computer
+```text
+Repository → Settings → Actions → Runners
+```
 
-Other computers do not connect directly to the runner. They only push code to GitHub. GitHub queues the workflow and the runner pulls the job over outbound HTTPS.
+## Multiple repositories
 
-Use these labels in the target repository:
+Create one instance for each repository:
+
+```bash
+make create NAME=kanyu REPO=lpearf-pixel/kanyu-spatial-engine
+make create NAME=community REPO=lpearf-pixel/community-selection-miniapp
+```
+
+This creates:
+
+```text
+instances/chan-shuo.env
+instances/kanyu.env
+instances/community.env
+```
+
+Each instance file contains repository-specific values only:
+
+```dotenv
+GITHUB_REPOSITORY=lpearf-pixel/chan-shuo
+RUNNER_NAME=home-chan-shuo-runner
+RUNNER_LABELS=lan,docker,home,chan-shuo
+RUNNER_GROUP=Default
+RUNNER_WORKDIR=_work
+RUNNER_EPHEMERAL=false
+```
+
+Start or stop all configured runners:
+
+```bash
+make start-all
+make stop-all
+```
+
+List all instances:
+
+```bash
+make status
+```
+
+## Cleanup and diagnostics
+
+Clean stale temporary files only:
+
+```bash
+make clean
+```
+
+Clean temporary files and remove the selected instance container/network while preserving its configuration and work volume:
+
+```bash
+make clean NAME=chan-shuo
+```
+
+Run end-to-end diagnostics:
+
+```bash
+make doctor NAME=chan-shuo
+```
+
+The doctor checks Docker, shared token configuration, merged Compose configuration, container state, proxy propagation, `Runner.Listener`, and GitHub API connectivity.
+
+## Other commands
+
+```bash
+make restart NAME=chan-shuo
+make stop NAME=chan-shuo
+make remove NAME=chan-shuo
+make list
+make help
+```
+
+Direct invocation also works without executable permission:
+
+```bash
+bash ./runnerctl start chan-shuo
+bash ./scripts/clean.sh chan-shuo
+```
+
+## Workflow labels
+
+Use the repository-specific label generated for the instance:
 
 ```yaml
 jobs:
   test:
-    runs-on: [self-hosted, Linux, ARM64, lan]
+    runs-on: [self-hosted, Linux, chan-shuo]
     steps:
       - uses: actions/checkout@v4
       - run: uname -a
       - run: docker version
 ```
 
-On an Intel/AMD Docker host, replace `ARM64` with `X64`. GitHub adds the OS and architecture labels automatically.
+GitHub adds the operating-system and architecture labels automatically.
 
-## Commands
+## Script permissions
 
-```bash
-./scripts/start.sh
-./scripts/status.sh
-./scripts/logs.sh
-./scripts/stop.sh
-./scripts/validate.sh
-```
+The repository contains a small workflow that normalizes command scripts to Git mode `100755`. The Makefile remains the supported fallback on filesystems or sync tools that do not preserve Unix executable bits.
 
-## Multiple repositories
-
-A repository-scoped runner serves one repository. For multiple repositories, create one Compose project and environment file per repository:
-
-```bash
-docker compose -p runner-kanyu --env-file env/kanyu.env up -d --build
-docker compose -p runner-kaiyuan --env-file env/kaiyuan.env up -d --build
-```
-
-Use a unique `RUNNER_NAME` for each instance. Repository-level isolation is the safe default.
+Do not repeatedly run local `chmod` as part of normal operation. Local permission changes can appear as Git modifications and block pulling on some machines.
 
 ## Security
 
 - Do not execute untrusted pull requests on a self-hosted runner.
-- Never commit `.env` or GitHub tokens.
-- Mounting `/var/run/docker.sock` gives jobs powerful access to the Docker host. Remove the mount when Docker is unnecessary.
+- Never commit `.env`, instance secrets, or GitHub tokens.
+- Mounting `/var/run/docker.sock` gives jobs powerful access to the Docker host.
 - Prefer a dedicated computer or OS account.
 - Restrict runner workflows to trusted branches and repositories.
 
 ## Network
 
-No inbound port is required. The runner needs outbound HTTPS to GitHub and any package or container registries used by workflows. LAN computers only need normal Git/GitHub access.
+No inbound port is required. The runner needs outbound HTTPS to GitHub and any package or container registries used by workflows. Other LAN computers only push code to GitHub; they do not connect directly to the runner.
