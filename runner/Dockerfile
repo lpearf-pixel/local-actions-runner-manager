@@ -8,7 +8,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates curl git gosu jq docker.io libicu74 libssl3 tini \
+       ca-certificates curl git gosu jq docker.io docker-compose-v2 libicu74 libssl3 tini \
+    && docker compose version \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --home-dir /runner --shell /bin/bash runner \
     && case "$TARGETARCH" in \
