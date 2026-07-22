@@ -1,4 +1,4 @@
-name: Normalize Script Modes
+name: Validate and Normalize Manager
 
 on:
   workflow_dispatch:
@@ -9,19 +9,40 @@ on:
       - runnerctl
       - runner/**
       - scripts/**
+      - Makefile
+      - compose.yaml
       - .github/workflows/normalize-script-modes.yml
 
 permissions:
   contents: write
 
 jobs:
-  normalize:
+  validate-and-normalize:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Validate shell syntax and command interface
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          bash -n runnerctl
+          bash runnerctl help >/dev/null
+          make help >/dev/null
+
+          while IFS= read -r file; do
+            bash -n "$file"
+          done < <(find scripts -type f -name '*.sh' -print | sort)
+
+          for file in runner/create runner/start-instance; do
+            if [[ -f "$file" ]]; then
+              bash -n "$file"
+            fi
+          done
 
       - name: Mark command scripts executable in Git
         shell: bash
