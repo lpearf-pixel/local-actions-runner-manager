@@ -9,19 +9,24 @@ COMPOSE_FILE="${ROOT_DIR}/compose.yaml"
 usage() {
   cat <<'EOF'
 Usage:
-  ./runnerctl create <name> <owner/repository>
-  ./runnerctl start <name>
-  ./runnerctl stop <name>
-  ./runnerctl restart <name>
-  ./runnerctl logs <name>
-  ./runnerctl status [name]
-  ./runnerctl list
-  ./runnerctl start-all
-  ./runnerctl stop-all
-  ./runnerctl remove <name>
+  bash ./runnerctl create <name> <owner/repository>
+  bash ./runnerctl start <name>
+  bash ./runnerctl stop <name>
+  bash ./runnerctl restart <name>
+  bash ./runnerctl logs <name>
+  bash ./runnerctl status [name]
+  bash ./runnerctl list
+  bash ./runnerctl start-all
+  bash ./runnerctl stop-all
+  bash ./runnerctl clean [name]
+  bash ./runnerctl doctor <name>
+  bash ./runnerctl remove <name>
+  bash ./runnerctl setup
 
 Global secrets and proxy settings live in .env.
 Per-project settings live in instances/<name>.env.
+Use the Makefile commands when executable bits are unavailable, for example:
+  make start NAME=chan-shuo
 EOF
 }
 
@@ -49,34 +54,54 @@ require_instance() {
   fi
 }
 
-compose_instance() {
+env_value() {
+  local file="$1"
+  local key="$2"
+  [[ -f "$file" ]] || return 0
+  sed -n "s/^${key}=//p" "$file" | tail -n 1
+}
+
+instance_container_name() {
+  local name="$1"
+  local configured
+  configured="$(env_value "$(instance_file "$name")" RUNNER_NAME)"
+  if [[ -n "$configured" ]]; then
+    printf '%s' "$configured"
+  else
+    printf 'home-%s-runner' "$name"
+  fi
+}
+
+compose_instance() (
+  set -Eeuo pipefail
+
   local name="$1"
   shift
   require_global_env
   require_instance "$name"
 
-  local temp_dir merged_env result
-  temp_dir="${TMPDIR:-/tmp}"
-  temp_dir="${temp_dir%/}"
-  merged_env="$(mktemp "${temp_dir}/runner-${name}.XXXXXX")"
-  chmod 600 "$merged_env"
+  local tmp_root temp_dir merged_env
+  tmp_root="${TMPDIR:-/tmp}"
+  tmp_root="${tmp_root%/}"
+  temp_dir="$(mktemp -d "${tmp_root}/runner-${name}.XXXXXX")"
+  merged_env="${temp_dir}/merged.env"
 
+  cleanup_merged_env() {
+    rm -rf -- "$temp_dir"
+  }
+  trap cleanup_merged_env EXIT HUP INT TERM
+
+  umask 077
   cat "$GLOBAL_ENV" > "$merged_env"
   printf '\n' >> "$merged_env"
   cat "$(instance_file "$name")" >> "$merged_env"
 
-  set +e
   docker compose \
     --project-name "runner-${name}" \
     --env-file "$merged_env" \
     --file "$COMPOSE_FILE" \
     "$@"
-  result=$?
-  set -e
-
-  rm -f "$merged_env"
-  return "$result"
-}
+)
 
 list_names() {
   mkdir -p "$INSTANCES_DIR"
@@ -124,7 +149,7 @@ status_all() {
   while IFS= read -r name; do
     found=true
     local repo status
-    repo="$(sed -n 's/^GITHUB_REPOSITORY=//p' "$(instance_file "$name")" | head -n1)"
+    repo="$(env_value "$(instance_file "$name")" GITHUB_REPOSITORY)"
     status="$(compose_instance "$name" ps --format '{{.Status}}' 2>/dev/null | head -n1 || true)"
     [[ -n "$status" ]] || status="stopped"
     printf '%-24s %-42s %s\n' "$name" "$repo" "$status"
@@ -147,6 +172,144 @@ run_all() {
   if [[ "$found" == false ]]; then
     echo "No instances configured."
   fi
+}
+
+clean_temp_files() {
+  local tmp_root path removed=0
+  tmp_root="${TMPDIR:-/tmp}"
+  tmp_root="${tmp_root%/}"
+
+  shopt -s nullglob
+  for path in "${tmp_root}"/runner-*.env "${tmp_root}"/runner-*.??????; do
+    [[ -e "$path" ]] || continue
+    rm -rf -- "$path"
+    echo "Removed temporary path: ${path}"
+    removed=1
+  done
+  shopt -u nullglob
+
+  if [[ "$removed" -eq 0 ]]; then
+    echo "No stale runner temporary files found."
+  fi
+}
+
+clean_command() {
+  local name="${1:-}"
+  clean_temp_files
+
+  if [[ -n "$name" ]]; then
+    require_instance "$name"
+    echo "Removing containers and network for instance: ${name}"
+    compose_instance "$name" down --remove-orphans || true
+  fi
+}
+
+print_check() {
+  local ok="$1"
+  local message="$2"
+  if [[ "$ok" == true ]]; then
+    printf 'OK   %s\n' "$message"
+  else
+    printf 'FAIL %s\n' "$message"
+  fi
+}
+
+doctor_instance() {
+  local name="${1:?instance name required}"
+  local container proxy configured_proxy
+  local failed=false
+
+  echo "Runner doctor: ${name}"
+
+  if command -v docker >/dev/null 2>&1; then
+    print_check true "Docker CLI is installed"
+  else
+    print_check false "Docker CLI is installed"
+    return 1
+  fi
+
+  if docker info >/dev/null 2>&1; then
+    print_check true "Docker daemon is reachable"
+  else
+    print_check false "Docker daemon is reachable"
+    return 1
+  fi
+
+  if [[ -f "$GLOBAL_ENV" ]] && grep -Eq '^GITHUB_TOKEN=.+$' "$GLOBAL_ENV"; then
+    print_check true "Global GITHUB_TOKEN is configured"
+  else
+    print_check false "Global GITHUB_TOKEN is configured"
+    failed=true
+  fi
+
+  if [[ -f "$(instance_file "$name")" ]]; then
+    print_check true "Instance configuration exists"
+  else
+    print_check false "Instance configuration exists"
+    return 1
+  fi
+
+  configured_proxy="$(env_value "$GLOBAL_ENV" HTTPS_PROXY)"
+  [[ -n "$configured_proxy" ]] || configured_proxy="$(env_value "$GLOBAL_ENV" HTTP_PROXY)"
+  if [[ -n "$configured_proxy" ]]; then
+    print_check true "Global proxy is configured"
+  else
+    print_check false "Global proxy is configured (optional when direct GitHub access is stable)"
+  fi
+
+  if compose_instance "$name" config >/dev/null 2>&1; then
+    print_check true "Merged Compose configuration is valid"
+  else
+    print_check false "Merged Compose configuration is valid"
+    failed=true
+  fi
+
+  container="$(instance_container_name "$name")"
+  if docker inspect "$container" >/dev/null 2>&1; then
+    print_check true "Container exists: ${container}"
+  else
+    print_check false "Container exists: ${container}"
+    return 1
+  fi
+
+  if [[ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true)" == true ]]; then
+    print_check true "Container is running"
+  else
+    print_check false "Container is running"
+    return 1
+  fi
+
+  proxy="$(docker exec "$container" sh -lc 'printf "%s" "${HTTPS_PROXY:-${HTTP_PROXY:-}}"' 2>/dev/null || true)"
+  if [[ -n "$proxy" ]]; then
+    print_check true "Proxy reached the runner container"
+  elif [[ -n "$configured_proxy" ]]; then
+    print_check false "Proxy reached the runner container"
+    failed=true
+  else
+    print_check true "Direct networking selected (no proxy configured)"
+  fi
+
+  if docker exec "$container" sh -lc 'pgrep -f Runner.Listener >/dev/null' >/dev/null 2>&1; then
+    print_check true "Runner.Listener is active"
+  else
+    print_check false "Runner.Listener is active"
+    failed=true
+  fi
+
+  if docker exec "$container" sh -lc 'curl -fsS --max-time 20 https://api.github.com/meta >/dev/null' >/dev/null 2>&1; then
+    print_check true "GitHub API is reachable from the container"
+  else
+    print_check false "GitHub API is reachable from the container"
+    failed=true
+  fi
+
+  [[ "$failed" == false ]]
+}
+
+setup_repository() {
+  git -C "$ROOT_DIR" config core.fileMode false
+  echo "Configured this checkout to ignore local executable-bit noise."
+  echo "Use Makefile commands such as: make start NAME=chan-shuo"
 }
 
 command="${1:-help}"
@@ -182,6 +345,9 @@ case "$command" in
   list) status_all ;;
   start-all) run_all start ;;
   stop-all) run_all stop ;;
+  clean) clean_command "${1:-}" ;;
+  doctor) doctor_instance "${1:?instance name required}" ;;
+  setup) setup_repository ;;
   remove)
     name="${1:?instance name required}"
     compose_instance "$name" down --volumes
