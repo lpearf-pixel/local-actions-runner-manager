@@ -23,14 +23,45 @@ REPO_URL="https://github.com/${GITHUB_REPOSITORY}"
 TOKEN_HEADER="Authorization: Bearer ${GITHUB_TOKEN}"
 API_HEADER="X-GitHub-Api-Version: 2022-11-28"
 
-if [[ -S /var/run/docker.sock ]]; then
-  socket_gid="$(stat -c '%g' /var/run/docker.sock)"
+configure_docker_socket() {
+  local socket=/var/run/docker.sock
+  local socket_gid socket_group attempt
+
+  [[ -S "$socket" ]] || return 0
+
+  socket_gid="$(stat -c '%g' "$socket")"
   if ! getent group "$socket_gid" >/dev/null; then
     groupadd --gid "$socket_gid" docker-host
   fi
+
   socket_group="$(getent group "$socket_gid" | cut -d: -f1)"
   usermod -aG "$socket_group" runner
-fi
+
+  # Docker Desktop may expose the bind-mounted socket as 0755. Group
+  # membership alone is insufficient in that case, so repair the group
+  # write bit every time the runner container starts.
+  if ! chmod g+rw "$socket"; then
+    echo "ERROR: failed to grant group write access to Docker socket" >&2
+    ls -ln "$socket" >&2 || true
+    exit 1
+  fi
+
+  for attempt in 1 2 3 4 5; do
+    if gosu runner docker version >/dev/null 2>&1; then
+      echo "Docker API is available to runner user."
+      return 0
+    fi
+    sleep 2
+  done
+
+  echo "ERROR: Docker socket is not writable by runner" >&2
+  ls -ln "$socket" >&2 || true
+  id runner >&2 || true
+  gosu runner docker version >&2 || true
+  exit 1
+}
+
+configure_docker_socket
 
 mkdir -p "/runner/${RUNNER_WORKDIR}"
 chown -R runner:runner "/runner/${RUNNER_WORKDIR}"
