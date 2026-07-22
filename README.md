@@ -14,7 +14,8 @@ Docker Compose manager for multiple repository-scoped GitHub Actions self-hosted
 - Docker socket support for workflows that build containers
 - macOS-compatible temporary-file handling
 - `clean` and `doctor` diagnostics
-- Makefile commands that do not depend on executable file permissions
+- Portable `bash ./runnerctl` commands that do not require `chmod`, Xcode, or `make`
+- Optional Makefile aliases when `make` is installed
 
 ## Requirements
 
@@ -23,6 +24,8 @@ Install Docker Desktop or Docker Engine on the computer that will execute jobs.
 Create a GitHub token that can manage repository self-hosted runners. Store it only in `.env` and never commit it.
 
 For a fine-grained personal access token, grant each target repository `Administration: Read and write`. For a classic token on a private repository, use the `repo` scope.
+
+`make` is optional. On macOS, it is normally provided by Xcode Command Line Tools, but the manager does not require it.
 
 ## Configure shared settings
 
@@ -49,7 +52,7 @@ The token and proxy are shared by all configured runner instances.
 
 ## Recommended command interface
 
-Use `make` commands. They invoke `bash ./runnerctl` internally, so no `chmod` is required after cloning or pulling.
+Use `bash ./runnerctl ...`. It works even when executable bits are unavailable and does not depend on `make` or Xcode Command Line Tools.
 
 One-time setup for an existing checkout:
 
@@ -57,22 +60,22 @@ One-time setup for an existing checkout:
 git config core.fileMode false
 git restore runnerctl scripts runner 2>/dev/null || true
 git pull --ff-only
-make setup
+bash ./runnerctl setup
 ```
 
 Create and start a runner:
 
 ```bash
-make create NAME=chan-shuo REPO=lpearf-pixel/chan-shuo
-make start NAME=chan-shuo
+bash ./runnerctl create chan-shuo lpearf-pixel/chan-shuo
+bash ./runnerctl start chan-shuo
 ```
 
 Check it:
 
 ```bash
-make status NAME=chan-shuo
-make doctor NAME=chan-shuo
-make logs NAME=chan-shuo
+bash ./runnerctl status chan-shuo
+bash ./runnerctl doctor chan-shuo
+bash ./runnerctl logs chan-shuo
 ```
 
 GitHub displays the runner under:
@@ -86,8 +89,8 @@ Repository → Settings → Actions → Runners
 Create one instance for each repository:
 
 ```bash
-make create NAME=kanyu REPO=lpearf-pixel/kanyu-spatial-engine
-make create NAME=community REPO=lpearf-pixel/community-selection-miniapp
+bash ./runnerctl create kanyu lpearf-pixel/kanyu-spatial-engine
+bash ./runnerctl create community lpearf-pixel/community-selection-miniapp
 ```
 
 This creates:
@@ -112,14 +115,14 @@ RUNNER_EPHEMERAL=false
 Start or stop all configured runners:
 
 ```bash
-make start-all
-make stop-all
+bash ./runnerctl start-all
+bash ./runnerctl stop-all
 ```
 
 List all instances:
 
 ```bash
-make status
+bash ./runnerctl status
 ```
 
 ## Cleanup and diagnostics
@@ -127,19 +130,19 @@ make status
 Clean stale temporary files only:
 
 ```bash
-make clean
+bash ./runnerctl clean
 ```
 
 Clean temporary files and remove the selected instance container/network while preserving its configuration and work volume:
 
 ```bash
-make clean NAME=chan-shuo
+bash ./runnerctl clean chan-shuo
 ```
 
 Run end-to-end diagnostics:
 
 ```bash
-make doctor NAME=chan-shuo
+bash ./runnerctl doctor chan-shuo
 ```
 
 The doctor checks Docker, shared token configuration, merged Compose configuration, container state, proxy propagation, `Runner.Listener`, and GitHub API connectivity.
@@ -147,19 +150,26 @@ The doctor checks Docker, shared token configuration, merged Compose configurati
 ## Other commands
 
 ```bash
-make restart NAME=chan-shuo
-make stop NAME=chan-shuo
-make remove NAME=chan-shuo
-make list
-make help
+bash ./runnerctl restart chan-shuo
+bash ./runnerctl stop chan-shuo
+bash ./runnerctl remove chan-shuo
+bash ./runnerctl list
+bash ./runnerctl help
+bash ./runnerctl sync
 ```
 
-Direct invocation also works without executable permission:
+## Optional Makefile aliases
+
+When `make` is installed, equivalent aliases are available:
 
 ```bash
-bash ./runnerctl start chan-shuo
-bash ./scripts/clean.sh chan-shuo
+make setup
+make start NAME=chan-shuo
+make doctor NAME=chan-shuo
+make clean NAME=chan-shuo
 ```
+
+On a Mac without Xcode Command Line Tools, continue using `bash ./runnerctl ...`; there is no need to install Xcode just for this manager.
 
 ## Workflow labels
 
@@ -179,7 +189,7 @@ GitHub adds the operating-system and architecture labels automatically.
 
 ## Script permissions
 
-The repository contains a small workflow that normalizes command scripts to Git mode `100755`. The Makefile remains the supported fallback on filesystems or sync tools that do not preserve Unix executable bits.
+The repository contains a workflow that normalizes command scripts to Git mode `100755`. The portable interface remains `bash ./runnerctl ...`, so the manager still works on filesystems or sync tools that do not preserve Unix executable bits.
 
 Do not repeatedly run local `chmod` as part of normal operation. Local permission changes can appear as Git modifications and block pulling on some machines.
 
