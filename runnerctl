@@ -22,6 +22,7 @@ Usage:
   bash ./runnerctl doctor <name>
   bash ./runnerctl remove <name>
   bash ./runnerctl setup
+  bash ./runnerctl sync
 
 Global secrets and proxy settings live in .env.
 Per-project settings live in instances/<name>.env.
@@ -104,10 +105,18 @@ compose_instance() (
 )
 
 list_names() {
+  local file base
   mkdir -p "$INSTANCES_DIR"
-  find "$INSTANCES_DIR" -maxdepth 1 -type f -name '*.env' ! -name 'example.env' -print \
-    | sed 's#.*/##; s/\.env$//' \
-    | sort
+
+  shopt -s nullglob
+  {
+    for file in "$INSTANCES_DIR"/*.env; do
+      base="${file##*/}"
+      [[ "$base" == "example.env" ]] && continue
+      printf '%s\n' "${base%.env}"
+    done
+  } | sort
+  shopt -u nullglob
 }
 
 create_instance() {
@@ -312,6 +321,12 @@ setup_repository() {
   echo "Use Makefile commands such as: make start NAME=chan-shuo"
 }
 
+sync_repository() {
+  git -C "$ROOT_DIR" config core.fileMode false
+  echo "Pulling repository updates with fast-forward-only mode..."
+  git -C "$ROOT_DIR" pull --ff-only
+}
+
 command="${1:-help}"
 shift || true
 
@@ -348,6 +363,7 @@ case "$command" in
   clean) clean_command "${1:-}" ;;
   doctor) doctor_instance "${1:?instance name required}" ;;
   setup) setup_repository ;;
+  sync) sync_repository ;;
   remove)
     name="${1:?instance name required}"
     compose_instance "$name" down --volumes
