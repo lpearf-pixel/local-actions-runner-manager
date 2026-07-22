@@ -6,7 +6,6 @@ services:
     image: local-actions-runner-manager:local
     container_name: ${RUNNER_NAME:-home-runner-01}
     restart: unless-stopped
-    init: true
     environment:
       GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:?set GITHUB_REPOSITORY in env}
       GITHUB_TOKEN: ${GITHUB_TOKEN:?set GITHUB_TOKEN in env}
