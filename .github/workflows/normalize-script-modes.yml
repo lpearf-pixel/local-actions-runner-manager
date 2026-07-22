@@ -1,0 +1,50 @@
+name: Normalize Script Modes
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - runnerctl
+      - runner/**
+      - scripts/**
+      - .github/workflows/normalize-script-modes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  normalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mark command scripts executable in Git
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          files=(runnerctl runner/create runner/start-instance)
+          while IFS= read -r file; do
+            files+=("$file")
+          done < <(find scripts -type f -name '*.sh' -print | sort)
+
+          for file in "${files[@]}"; do
+            if [[ -f "$file" ]]; then
+              git update-index --chmod=+x "$file"
+            fi
+          done
+
+          if git diff --cached --quiet; then
+            echo "Executable modes are already normalized."
+            exit 0
+          fi
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "chore: normalize script executable modes"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
