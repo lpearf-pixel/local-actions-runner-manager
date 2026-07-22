@@ -25,7 +25,7 @@ API_HEADER="X-GitHub-Api-Version: 2022-11-28"
 
 configure_docker_socket() {
   local socket=/var/run/docker.sock
-  local socket_gid socket_group attempt
+  local socket_gid socket_group attempt ping_output
 
   [[ -S "$socket" ]] || return 0
 
@@ -47,17 +47,33 @@ configure_docker_socket() {
   fi
 
   for attempt in 1 2 3 4 5; do
-    if gosu runner docker version >/dev/null 2>&1; then
-      echo "Docker API is available to runner user."
-      return 0
+    if ping_output="$(gosu runner curl --silent --show-error --fail --max-time 5 --unix-socket "$socket" http://localhost/_ping 2>&1)" \
+       && [[ "$ping_output" == "OK" ]]; then
+      echo "Docker API ping succeeded through mounted socket."
+
+      if gosu runner docker version >/dev/null 2>&1; then
+        echo "Docker CLI can talk to daemon as runner user."
+        return 0
+      fi
+
+      echo "ERROR: Docker CLI cannot talk to daemon even though Docker API ping succeeded." >&2
+      echo "This usually means the runner image Docker CLI is incompatible with the host Docker Desktop daemon." >&2
+      echo "Socket state:" >&2
+      ls -ln "$socket" >&2 || true
+      echo "Runner identity:" >&2
+      id runner >&2 || true
+      echo "Docker CLI diagnostic:" >&2
+      gosu runner docker version >&2 || true
+      exit 1
     fi
+
     sleep 2
   done
 
-  echo "ERROR: Docker socket is not writable by runner" >&2
+  echo "ERROR: Docker API is not reachable through mounted socket" >&2
+  echo "Last /_ping output: ${ping_output:-<empty>}" >&2
   ls -ln "$socket" >&2 || true
   id runner >&2 || true
-  gosu runner docker version >&2 || true
   exit 1
 }
 
