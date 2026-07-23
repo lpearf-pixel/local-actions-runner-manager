@@ -20,6 +20,7 @@ Usage:
   bash ./runnerctl start-all
   bash ./runnerctl stop-all
   bash ./runnerctl clean [name]
+  bash ./runnerctl doctor-host
   bash ./runnerctl doctor <name>
   bash ./runnerctl repair-permissions
   bash ./runnerctl remove <name>
@@ -185,8 +186,8 @@ EOF
 }
 
 status_all() {
-  local found=false name file repo container status
-  printf '%-24s %-42s %s\n' INSTANCE REPOSITORY STATUS
+  local found=false name file repo container status runner_name labels
+  printf '%-24s %-42s %-28s %-38s %s\n' INSTANCE REPOSITORY RUNNER_NAME LABELS STATUS
   while IFS= read -r name; do
     found=true
     file="$(instance_file "$name")"
@@ -194,19 +195,44 @@ status_all() {
 
     if [[ ! -r "$file" ]]; then
       repo="permission-denied"
+      runner_name="permission-denied"
+      labels="permission-denied"
       status="$(container_status "$container")"
     else
       repo="$(env_value "$file" GITHUB_REPOSITORY)"
       [[ -n "$repo" ]] || repo="unknown"
-      container="$(instance_container_name "$name")"
+      runner_name="$(env_value "$file" RUNNER_NAME)"
+      [[ -n "$runner_name" ]] || runner_name="home-${name}-runner"
+      labels="$(env_value "$file" RUNNER_LABELS)"
+      [[ -n "$labels" ]] || labels="unknown"
+      container="$runner_name"
       status="$(container_status "$container")"
     fi
 
-    printf '%-24s %-42s %s\n' "$name" "$repo" "$status"
+    printf '%-24s %-42s %-28s %-38s %s\n' "$name" "$repo" "$runner_name" "$labels" "$status"
   done < <(list_names)
   if [[ "$found" == false ]]; then
     echo "No instances configured."
   fi
+}
+
+status_one() {
+  local name="${1:?instance name required}"
+  local file repo runner_name labels container status
+
+  require_instance "$name"
+  file="$(instance_file "$name")"
+  repo="$(env_value "$file" GITHUB_REPOSITORY)"
+  [[ -n "$repo" ]] || repo="unknown"
+  runner_name="$(env_value "$file" RUNNER_NAME)"
+  [[ -n "$runner_name" ]] || runner_name="home-${name}-runner"
+  labels="$(env_value "$file" RUNNER_LABELS)"
+  [[ -n "$labels" ]] || labels="unknown"
+  container="$runner_name"
+  status="$(container_status "$container")"
+
+  printf '%-24s %-42s %-28s %-38s %s\n' INSTANCE REPOSITORY RUNNER_NAME LABELS STATUS
+  printf '%-24s %-42s %-28s %-38s %s\n' "$name" "$repo" "$runner_name" "$labels" "$status"
 }
 
 run_all() {
@@ -262,6 +288,77 @@ print_check() {
   else
     printf 'FAIL %s\n' "$message"
   fi
+}
+
+doctor_host() {
+  local failed=false context socket_path client_version server_version memory cpus
+
+  echo "Runner host doctor"
+
+  if command -v docker >/dev/null 2>&1; then
+    print_check true "Docker CLI is installed"
+  else
+    print_check false "Docker CLI is installed"
+    return 1
+  fi
+
+  context="$(docker context show 2>/dev/null || true)"
+  if [[ -n "$context" ]]; then
+    print_check true "Docker context: ${context}"
+  else
+    print_check false "Docker context is readable"
+    failed=true
+  fi
+
+  if docker info >/dev/null 2>&1; then
+    print_check true "Docker daemon is reachable"
+  else
+    print_check false "Docker daemon is reachable"
+    failed=true
+  fi
+
+  client_version="$(docker version --format '{{.Client.Version}}' 2>/dev/null || true)"
+  server_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
+  if [[ -n "$client_version" ]]; then
+    print_check true "Docker client version: ${client_version}"
+  else
+    print_check false "Docker client version is readable"
+    failed=true
+  fi
+  if [[ -n "$server_version" ]]; then
+    print_check true "Docker server version: ${server_version}"
+  else
+    print_check false "Docker server version is readable"
+    failed=true
+  fi
+
+  socket_path=""
+  if [[ -S /var/run/docker.sock || -L /var/run/docker.sock ]]; then
+    socket_path="/var/run/docker.sock"
+  elif [[ -S "$HOME/.docker/run/docker.sock" || -L "$HOME/.docker/run/docker.sock" ]]; then
+    socket_path="$HOME/.docker/run/docker.sock"
+  fi
+  if [[ -n "$socket_path" ]]; then
+    print_check true "Docker socket exists: ${socket_path}"
+    ls -l "$socket_path" 2>/dev/null || true
+  else
+    print_check false "Docker socket exists at /var/run/docker.sock or HOME/.docker/run/docker.sock"
+    failed=true
+  fi
+
+  cpus="$(docker info --format '{{.NCPU}}' 2>/dev/null || true)"
+  memory="$(docker info --format '{{.MemTotal}}' 2>/dev/null || true)"
+  if [[ -n "$cpus" ]]; then
+    echo "INFO Docker CPUs: ${cpus}"
+  fi
+  if [[ -n "$memory" ]]; then
+    echo "INFO Docker memory bytes: ${memory}"
+  fi
+
+  echo "INFO Use local runners only for trusted workflows that need local Docker, LAN services, private models, local data, or hardware."
+  echo "INFO Keep ordinary lint/typecheck/unit jobs on GitHub-hosted runners when possible."
+
+  [[ "$failed" == false ]]
 }
 
 doctor_instance() {
@@ -449,9 +546,7 @@ case "$command" in
     ;;
   status)
     if [[ $# -gt 0 ]]; then
-      name="$1"
-      container="$(instance_container_name "$name")"
-      printf '%s\t%s\n' "$container" "$(container_status "$container")"
+      status_one "$1"
     else
       status_all
     fi
@@ -466,6 +561,7 @@ case "$command" in
   start-all) run_all start ;;
   stop-all) run_all stop ;;
   clean) clean_command "${1:-}" ;;
+  doctor-host) doctor_host ;;
   doctor) doctor_instance "${1:?instance name required}" ;;
   repair-permissions) repair_permissions ;;
   setup) setup_repository ;;
