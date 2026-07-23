@@ -4,16 +4,28 @@ Docker Compose manager for multiple repository-scoped GitHub Actions self-hosted
 
 > A runner inside Docker Desktop is a Linux runner, even when Docker Desktop runs on macOS.
 
+## Before using local runners
+
+Read the [Local Runner Operator Contract](docs/runner-operator-contract.md) before changing workflows to `runs-on: [self-hosted, ...]`.
+
+Key rules:
+
+- One self-hosted runner instance can execute only one GitHub Actions job at a time.
+- More parallel jobs require more `instances/*.env` files with unique `RUNNER_NAME` values.
+- A repository-scoped runner only serves the repository configured by `GITHUB_REPOSITORY`.
+- Use GitHub-hosted runners for ordinary lint, typecheck, and unit tests unless the job needs local Docker, LAN services, private models, local databases, datasets, or hardware.
+- Run `bash ./runnerctl doctor-host`, `bash ./runnerctl status`, and `bash ./runnerctl doctor <instance>` before blaming workflow code.
+
 ## Features
 
 - One isolated Compose project per GitHub repository
 - One shared root `.env` for GitHub token and proxy settings
-- One `instances/<name>.env` file per repository
+- One `instances/<name>.env` file per runner instance
 - `amd64` and `arm64` runner images
 - Automatic runner registration and graceful unregistration
 - Docker socket support for workflows that build containers
 - macOS-compatible temporary-file handling
-- `clean` and `doctor` diagnostics
+- `clean`, `doctor-host`, and `doctor` diagnostics
 - Portable `bash ./runnerctl` commands that do not require `chmod`, Xcode, or `make`
 - Optional Makefile aliases when `make` is installed
 
@@ -70,9 +82,10 @@ bash ./runnerctl create chan-shuo lpearf-pixel/chan-shuo
 bash ./runnerctl start chan-shuo
 ```
 
-Check it:
+Check the host and runner:
 
 ```bash
+bash ./runnerctl doctor-host
 bash ./runnerctl status chan-shuo
 bash ./runnerctl doctor chan-shuo
 bash ./runnerctl logs chan-shuo
@@ -125,7 +138,45 @@ List all instances:
 bash ./runnerctl status
 ```
 
+## Parallel runners for one repository
+
+To run multiple jobs for the same repository, create additional instance files with the same `GITHUB_REPOSITORY` and shared project label, but a unique `RUNNER_NAME`.
+
+```text
+instances/community.env
+instances/community-w01.env
+```
+
+Example worker instance:
+
+```dotenv
+GITHUB_REPOSITORY=lpearf-pixel/community-selection-miniapp
+RUNNER_NAME=home-community-w01
+RUNNER_LABELS=lan,docker,home,community,community-w01
+RUNNER_GROUP=Default
+RUNNER_WORKDIR=_work
+RUNNER_EPHEMERAL=false
+```
+
+Both `community` and `community-w01` can receive jobs that target the shared label:
+
+```yaml
+runs-on: [self-hosted, Linux, community]
+```
+
+Use the unique label only when intentionally pinning a job for debugging:
+
+```yaml
+runs-on: [self-hosted, Linux, community-w01]
+```
+
 ## Cleanup and diagnostics
+
+Check the local Docker host before debugging any instance:
+
+```bash
+bash ./runnerctl doctor-host
+```
 
 Clean stale temporary files only:
 
@@ -145,7 +196,7 @@ Run end-to-end diagnostics:
 bash ./runnerctl doctor chan-shuo
 ```
 
-The doctor checks Docker, shared token configuration, merged Compose configuration, container state, proxy propagation, `Runner.Listener`, and GitHub API connectivity.
+The host doctor checks Docker CLI, Docker daemon reachability, Docker context, Docker socket, and client/server versions. The instance doctor checks shared token configuration, merged Compose configuration, container state, proxy propagation, `Runner.Listener`, and GitHub API connectivity.
 
 ## Other commands
 
