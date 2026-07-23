@@ -90,6 +90,32 @@ Good local-runner use cases:
 
 Avoid local runners for untrusted pull requests. Mounting `/var/run/docker.sock` gives the job powerful access to the Docker host.
 
+## Credential contract
+
+Read [Management Credential Lifecycle](credential-lifecycle.md) before changing the runner entrypoint or Compose environment.
+
+- The manager `.env` contains the management GitHub token used to register, remove, or inspect repository-scoped runners.
+- The runner container receives that token only so `entrypoint.sh` can call GitHub's runner registration/removal APIs.
+- After `config.sh` completes, `entrypoint.sh` starts `run.sh` with management-only token variables removed from the child environment.
+- Jobs should rely on GitHub Actions' normal per-job `GITHUB_TOKEN` only when the workflow grants it.
+- Logs, doctor output, JSON output, and tests must not print real tokens, registration tokens, cookies, private URLs, or secrets.
+
+## Proxy and local-network contract
+
+Compose passes both uppercase and lowercase proxy bypass variables:
+
+```dotenv
+NO_PROXY=localhost,127.0.0.1,host.docker.internal
+no_proxy=localhost,127.0.0.1,host.docker.internal
+```
+
+Rules:
+
+- Container runners usually reach host services through `host.docker.internal`.
+- Physical-machine runners usually reach host services through `127.0.0.1`.
+- Local Docker, local databases, local APIs, and health checks should not leave through an external proxy.
+- User-specific proxy additions may be appended in `.env`; do not silently remove the default local bypass values.
+
 ## Pre-flight checks
 
 Before relying on local runners:
@@ -111,6 +137,8 @@ bash ./runnerctl doctor <instance>
 | `Cannot configure the runner because it is already configured` | Runner state persisted across container restart | Pull latest manager; current entrypoint reuses existing `.runner/.credentials` |
 | Only one job runs at a time | Only one runner instance exists for that repository | Add another `instances/<project>-w01.env` with the same shared label |
 | Workflow never lands on the new instance | Labels do not match `runs-on` | Check `RUNNER_LABELS` in `bash ./runnerctl status` |
+| Local database or API calls route through the proxy | Missing `NO_PROXY` / `no_proxy` local bypass | Check merged Compose config and runner container environment |
+| Management PAT appears inside a job environment | Credential isolation regression | Stop using that image and inspect `runner/entrypoint.sh` before restarting runners |
 
 ## Resource guidance
 
@@ -133,3 +161,4 @@ Before adding `runs-on: [self-hosted, ...]` to another repository, confirm:
 - `RUNNER_NAME` is unique.
 - `bash ./runnerctl doctor-host` passes.
 - `bash ./runnerctl doctor <instance>` passes after the container starts.
+- The workflow does not require untrusted pull request execution on a Docker-socket runner.

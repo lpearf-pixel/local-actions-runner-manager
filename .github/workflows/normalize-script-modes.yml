@@ -2,6 +2,18 @@ name: Validate and Normalize Manager
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - runnerctl
+      - runner/**
+      - scripts/**
+      - tests/**
+      - docs/**
+      - Makefile
+      - compose.yaml
+      - .github/workflows/normalize-script-modes.yml
   push:
     branches:
       - main
@@ -10,6 +22,7 @@ on:
       - runner/**
       - scripts/**
       - tests/**
+      - docs/**
       - Makefile
       - compose.yaml
       - .github/workflows/normalize-script-modes.yml
@@ -18,13 +31,16 @@ permissions:
   contents: write
 
 jobs:
-  validate-and-normalize:
+  shell-syntax:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v6.0.2, verified from the PR run action resolution.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          fetch-depth: 0
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
 
       - name: Validate shell syntax and command interface
         shell: bash
@@ -36,22 +52,57 @@ jobs:
           make help >/dev/null
 
           while IFS= read -r file; do
+            echo "syntax: ${file}"
             bash -n "$file"
           done < <(find scripts tests -type f -name '*.sh' -print | sort)
 
           for file in runner/create runner/start-instance; do
             if [[ -f "$file" ]]; then
+              echo "syntax: ${file}"
               bash -n "$file"
             fi
           done
 
-      - name: Run manager regression tests
+  regression-tests:
+    if: github.actor != 'github-actions[bot]'
+    needs: shell-syntax
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test_file:
+          - tests/docker-cli-version-contract.test.sh
+          - tests/docker-socket-access.test.sh
+          - tests/legacy-entrypoints-contract.test.sh
+          - tests/no-proxy-contract.test.sh
+          - tests/runner-credential-isolation.test.sh
+          - tests/runner-restart-idempotency.test.sh
+          - tests/runner-version-pin.test.sh
+          - tests/runnerctl-doctor-host.test.sh
+          - tests/runnerctl-permissions.test.sh
+          - tests/runnerctl-status-contract.test.sh
+          - tests/workflow-actions-contract.test.sh
+    name: regression ${{ matrix.test_file }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Run regression test
         shell: bash
-        run: |
-          set -Eeuo pipefail
-          while IFS= read -r file; do
-            bash "$file"
-          done < <(find tests -type f -name '*.test.sh' -print | sort)
+        run: bash "${{ matrix.test_file }}"
+
+  normalize-executable-modes:
+    if: github.event_name == 'push' && github.ref_name == 'main' && github.actor != 'github-actions[bot]'
+    needs: regression-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 1
+          show-progress: false
 
       - name: Mark command scripts executable in Git
         shell: bash

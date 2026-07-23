@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-./scripts/validate.sh
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 
-docker compose up --detach --build
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $0 <instance-name>" >&2
+  echo "Example: $0 community" >&2
+  echo "Equivalent: bash ./runnerctl start <instance-name>" >&2
+  exit 1
+fi
 
-echo
-echo "Runner started. Check GitHub: Settings -> Actions -> Runners"
-docker compose ps
+exec bash ./runnerctl start "$@"

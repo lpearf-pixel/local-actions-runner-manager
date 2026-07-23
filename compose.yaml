@@ -16,8 +16,10 @@ services:
       RUNNER_EPHEMERAL: ${RUNNER_EPHEMERAL:-false}
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
       http_proxy: ${HTTP_PROXY:-}
       https_proxy: ${HTTPS_PROXY:-}
+      no_proxy: ${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
     volumes:
       - runner-data:/runner/_work
       - /var/run/docker.sock:/var/run/docker.sock

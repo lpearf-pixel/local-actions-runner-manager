@@ -20,7 +20,8 @@ RUNNER_WORKDIR="${RUNNER_WORKDIR:-_work}"
 RUNNER_EPHEMERAL="${RUNNER_EPHEMERAL:-false}"
 API_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}"
 REPO_URL="https://github.com/${GITHUB_REPOSITORY}"
-TOKEN_HEADER="Authorization: Bearer ${GITHUB_TOKEN}"
+MANAGEMENT_GITHUB_TOKEN="${GITHUB_TOKEN}"
+TOKEN_HEADER="Authorization: Bearer ${MANAGEMENT_GITHUB_TOKEN}"
 API_HEADER="X-GitHub-Api-Version: 2022-11-28"
 
 configure_docker_socket() {
@@ -39,7 +40,8 @@ configure_docker_socket() {
 
   # Docker Desktop may expose the bind-mounted socket as 0755. Group
   # membership alone is insufficient in that case, so repair the group
-  # write bit every time the runner container starts.
+  # write bit every time the runner container starts. This intentionally
+  # avoids world-writable chmod modes such as 666 or 777.
   if ! chmod g+rw "$socket"; then
     echo "ERROR: failed to grant group write access to Docker socket" >&2
     ls -ln "$socket" >&2 || true
@@ -145,6 +147,19 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-gosu runner ./run.sh &
-runner_pid=$!
+start_runner_without_management_credentials() {
+  echo "Starting runner listener with management credentials removed from job environment."
+  env \
+    -u GITHUB_TOKEN \
+    -u GH_TOKEN \
+    -u RUNNER_TOKEN \
+    -u REGISTRATION_TOKEN \
+    -u REMOVE_TOKEN \
+    -u MANAGEMENT_GITHUB_TOKEN \
+    -u ACTIONS_RUNNER_INPUT_TOKEN \
+    gosu runner ./run.sh &
+  runner_pid=$!
+}
+
+start_runner_without_management_credentials
 wait "$runner_pid"
