@@ -10,6 +10,12 @@ usage() {
   cat <<'EOF'
 Usage:
   bash ./runnerctl create <name> <owner/repository>
+  bash ./runnerctl add-worker <base> <worker-id> [--start] [--join-pool]
+  bash ./runnerctl scale <base> <count> [--start] [--join-pool]
+  bash ./runnerctl downscale <base> <count> [--stop-only|--remove-config] [--force]
+  bash ./runnerctl workers <base>
+  bash ./runnerctl pool-join <instance> <shared-label>
+  bash ./runnerctl pool-leave <instance> <shared-label>
   bash ./runnerctl start <name>
   bash ./runnerctl stop <name>
   bash ./runnerctl restart <name>
@@ -30,6 +36,8 @@ Usage:
 Global secrets and proxy settings live in .env.
 Per-project settings live in instances/<name>.env.
 Invoke through bash so executable file permissions are not required.
+
+Scaling defaults are conservative: workers are isolated unless --join-pool is passed.
 EOF
 }
 
@@ -66,11 +74,74 @@ require_instance() {
   fi
 }
 
+validate_instance_name() {
+  local name="$1"
+  if [[ ! "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+    echo "ERROR: invalid instance name: ${name}" >&2
+    exit 1
+  fi
+}
+
+validate_positive_count() {
+  local count="$1"
+  if [[ ! "$count" =~ ^[0-9]+$ || "$count" -lt 1 ]]; then
+    echo "ERROR: count must be an integer greater than or equal to 1" >&2
+    exit 1
+  fi
+}
+
 env_value() {
   local file="$1"
   local key="$2"
   [[ -f "$file" && -r "$file" ]] || return 0
   sed -n "s/^${key}=//p" "$file" | tail -n 1
+}
+
+set_env_value() {
+  local file="$1" key="$2" value="$3" tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/runner-env.XXXXXX")"
+  awk -v key="$key" -v value="$value" '
+    BEGIN { done = 0 }
+    $0 ~ "^" key "=" { print key "=" value; done = 1; next }
+    { print }
+    END { if (!done) print key "=" value }
+  ' "$file" > "$tmp"
+  mv "$tmp" "$file"
+  chmod 600 "$file"
+}
+
+label_contains() {
+  local labels="$1" needle="$2" part
+  IFS=',' read -r -a parts <<< "$labels"
+  for part in "${parts[@]}"; do
+    [[ "$part" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+append_label() {
+  local labels="$1" label="$2"
+  if [[ -z "$labels" ]]; then
+    printf '%s' "$label"
+  elif label_contains "$labels" "$label"; then
+    printf '%s' "$labels"
+  else
+    printf '%s,%s' "$labels" "$label"
+  fi
+}
+
+remove_label() {
+  local labels="$1" label="$2" part out=""
+  IFS=',' read -r -a parts <<< "$labels"
+  for part in "${parts[@]}"; do
+    [[ -z "$part" || "$part" == "$label" ]] && continue
+    if [[ -z "$out" ]]; then
+      out="$part"
+    else
+      out="${out},${part}"
+    fi
+  done
+  printf '%s' "$out"
 }
 
 instance_container_name() {
@@ -155,10 +226,7 @@ create_instance() {
   local repository="${2:?repository required in owner/repository format}"
   local file
 
-  if [[ ! "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
-    echo "ERROR: invalid instance name: ${name}" >&2
-    exit 1
-  fi
+  validate_instance_name "$name"
   if [[ ! "$repository" =~ ^[^/]+/[^/]+$ ]]; then
     echo "ERROR: repository must use owner/repository format" >&2
     exit 1
@@ -183,6 +251,180 @@ RUNNER_EPHEMERAL=false
 EOF
   chmod 600 "$file"
   echo "Created ${file}"
+}
+
+create_worker_file() {
+  local base="$1" worker_id="$2" join_pool="$3"
+  local worker="${base}-${worker_id}" base_file worker_file repository group workdir ephemeral labels
+
+  validate_instance_name "$base"
+  validate_instance_name "$worker_id"
+  require_instance "$base"
+
+  worker_file="$(instance_file "$worker")"
+  if [[ -e "$worker_file" ]]; then
+    echo "ERROR: worker already exists: ${worker_file}" >&2
+    exit 1
+  fi
+
+  base_file="$(instance_file "$base")"
+  repository="$(env_value "$base_file" GITHUB_REPOSITORY)"
+  [[ -n "$repository" ]] || { echo "ERROR: base instance missing GITHUB_REPOSITORY" >&2; exit 1; }
+  group="$(env_value "$base_file" RUNNER_GROUP)"
+  [[ -n "$group" ]] || group="Default"
+  workdir="$(env_value "$base_file" RUNNER_WORKDIR)"
+  [[ -n "$workdir" ]] || workdir="_work"
+  ephemeral="$(env_value "$base_file" RUNNER_EPHEMERAL)"
+  [[ -n "$ephemeral" ]] || ephemeral="false"
+
+  if [[ "$join_pool" == true ]]; then
+    labels="lan,docker,home,${base},${worker}"
+  else
+    labels="lan,docker,home,${worker}"
+  fi
+
+  mkdir -p "$INSTANCES_DIR"
+  chmod 700 "$INSTANCES_DIR" 2>/dev/null || true
+  umask 077
+  cat >"$worker_file" <<EOF
+GITHUB_REPOSITORY=${repository}
+RUNNER_NAME=home-${worker}-runner
+RUNNER_LABELS=${labels}
+RUNNER_GROUP=${group}
+RUNNER_WORKDIR=${workdir}
+RUNNER_EPHEMERAL=${ephemeral}
+EOF
+  chmod 600 "$worker_file"
+  echo "Created ${worker_file}"
+}
+
+add_worker_command() {
+  local base="${1:?base instance name required}" worker_id="${2:?worker id required}"
+  shift 2
+  local start=false join_pool=false arg worker
+  for arg in "$@"; do
+    case "$arg" in
+      --start) start=true ;;
+      --join-pool) join_pool=true ;;
+      *) echo "ERROR: unknown add-worker option: ${arg}" >&2; exit 1 ;;
+    esac
+  done
+  create_worker_file "$base" "$worker_id" "$join_pool"
+  worker="${base}-${worker_id}"
+  if [[ "$start" == true ]]; then
+    compose_instance "$worker" up --detach --build
+    compose_instance "$worker" ps
+  fi
+}
+
+pool_label_command() {
+  local mode="$1" name="${2:?instance name required}" label="${3:?shared label required}"
+  local file labels updated
+  validate_instance_name "$label"
+  require_instance "$name"
+  file="$(instance_file "$name")"
+  labels="$(env_value "$file" RUNNER_LABELS)"
+  [[ -n "$labels" ]] || labels="lan,docker,home,${name}"
+  if [[ "$mode" == join ]]; then
+    updated="$(append_label "$labels" "$label")"
+  else
+    updated="$(remove_label "$labels" "$label")"
+  fi
+  set_env_value "$file" RUNNER_LABELS "$updated"
+  echo "Updated labels for ${name}: ${updated}"
+}
+
+worker_sort_key() {
+  local name="$1"
+  if [[ "$name" =~ -w([0-9]+)$ ]]; then
+    printf '%08d %s\n' "${BASH_REMATCH[1]}" "$name"
+  fi
+}
+
+list_workers_for_base() {
+  local base="$1" name
+  while IFS= read -r name; do
+    if [[ "$name" =~ ^${base}-w[0-9]+$ ]]; then
+      worker_sort_key "$name"
+    fi
+  done < <(list_names) | sort -n | awk '{print $2}'
+}
+
+workers_command() {
+  local base="${1:?base instance name required}" worker
+  require_instance "$base"
+  printf '%s\n' "$base"
+  while IFS= read -r worker; do
+    [[ -n "$worker" ]] && printf '%s\n' "$worker"
+  done < <(list_workers_for_base "$base")
+}
+
+scale_command() {
+  local base="${1:?base instance name required}" count="${2:?count required}"
+  shift 2
+  local start=false join_pool=false arg i worker_id worker
+  validate_positive_count "$count"
+  require_instance "$base"
+  for arg in "$@"; do
+    case "$arg" in
+      --start) start=true ;;
+      --join-pool) join_pool=true ;;
+      *) echo "ERROR: unknown scale option: ${arg}" >&2; exit 1 ;;
+    esac
+  done
+  for ((i = 1; i < count; i += 1)); do
+    printf -v worker_id 'w%02d' "$i"
+    worker="${base}-${worker_id}"
+    if [[ -e "$(instance_file "$worker")" ]]; then
+      echo "Worker already exists: ${worker}"
+      continue
+    fi
+    create_worker_file "$base" "$worker_id" "$join_pool"
+    if [[ "$start" == true ]]; then
+      compose_instance "$worker" up --detach --build
+      compose_instance "$worker" ps
+    fi
+  done
+}
+
+downscale_command() {
+  local base="${1:?base instance name required}" count="${2:?count required}"
+  shift 2
+  local mode="stop-only" force=false arg keep worker total index running
+  validate_positive_count "$count"
+  require_instance "$base"
+  for arg in "$@"; do
+    case "$arg" in
+      --stop-only) mode="stop-only" ;;
+      --remove-config) mode="remove-config" ;;
+      --force) force=true ;;
+      *) echo "ERROR: unknown downscale option: ${arg}" >&2; exit 1 ;;
+    esac
+  done
+
+  mapfile -t workers < <(list_workers_for_base "$base")
+  total="${#workers[@]}"
+  keep=$((count - 1))
+  (( keep < 0 )) && keep=0
+  if (( total <= keep )); then
+    echo "No workers selected for downscale."
+    return 0
+  fi
+
+  for ((index = total - 1; index >= keep; index -= 1)); do
+    worker="${workers[$index]}"
+    running="$(docker inspect -f '{{.State.Running}}' "$(instance_container_name "$worker")" 2>/dev/null || echo false)"
+    if [[ "$mode" == "remove-config" && "$running" == true && "$force" != true ]]; then
+      echo "ERROR: refusing to remove running worker without --force: ${worker}" >&2
+      exit 1
+    fi
+    echo "Stopping worker: ${worker}"
+    compose_instance "$worker" down
+    if [[ "$mode" == "remove-config" ]]; then
+      rm -f "$(instance_file "$worker")"
+      echo "Removed worker configuration: ${worker}"
+    fi
+  done
 }
 
 status_all() {
@@ -526,6 +768,12 @@ shift || true
 
 case "$command" in
   create) create_instance "$@" ;;
+  add-worker) add_worker_command "$@" ;;
+  scale) scale_command "$@" ;;
+  downscale) downscale_command "$@" ;;
+  workers) workers_command "${1:?base instance name required}" ;;
+  pool-join) pool_label_command join "$@" ;;
+  pool-leave) pool_label_command leave "$@" ;;
   start)
     name="${1:?instance name required}"
     compose_instance "$name" up --detach --build
