@@ -2,6 +2,18 @@ name: Validate and Normalize Manager
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - runnerctl
+      - runner/**
+      - scripts/**
+      - tests/**
+      - docs/**
+      - Makefile
+      - compose.yaml
+      - .github/workflows/normalize-script-modes.yml
   push:
     branches:
       - main
@@ -10,6 +22,7 @@ on:
       - runner/**
       - scripts/**
       - tests/**
+      - docs/**
       - Makefile
       - compose.yaml
       - .github/workflows/normalize-script-modes.yml
@@ -22,7 +35,10 @@ jobs:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v6.0.2 was verified from the official releases page.
+      # Keep the concrete version tag here; use a full commit SHA only after the
+      # official full tag object commit has been re-verified in this repository.
+      - uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0
 
@@ -54,6 +70,7 @@ jobs:
           done < <(find tests -type f -name '*.test.sh' -print | sort)
 
       - name: Mark command scripts executable in Git
+        if: github.event_name == 'push' && github.ref_name == 'main'
         shell: bash
         run: |
           set -Eeuo pipefail
