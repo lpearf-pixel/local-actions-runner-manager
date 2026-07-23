@@ -35,7 +35,7 @@ EOF
 chmod 644 "$TMP_ROOT/instances/kanyu.env"
 (cd "$TMP_ROOT" && bash ./runnerctl repair-permissions)
 
-mode="$(stat -f '%Lp' "$TMP_ROOT/instances/kanyu.env" 2>/dev/null || stat -c '%a' "$TMP_ROOT/instances/kanyu.env")"
+mode="$(stat -c '%a' "$TMP_ROOT/instances/kanyu.env" 2>/dev/null || stat -f '%Lp' "$TMP_ROOT/instances/kanyu.env")"
 if [[ "$mode" != "600" ]]; then
   echo "Expected instance env mode 600, got $mode" >&2
   exit 1
