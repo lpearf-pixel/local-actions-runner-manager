@@ -35,12 +35,12 @@ jobs:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
-      # actions/checkout v6.0.2 was verified from the official releases page.
-      # Keep the concrete version tag here; use a full commit SHA only after the
-      # official full tag object commit has been re-verified in this repository.
-      - uses: actions/checkout@v6.0.2
+      # actions/checkout v6.0.2, verified from the PR run action resolution.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          fetch-depth: 0
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
 
       - name: Validate shell syntax and command interface
         shell: bash
@@ -52,11 +52,13 @@ jobs:
           make help >/dev/null
 
           while IFS= read -r file; do
+            echo "syntax: ${file}"
             bash -n "$file"
           done < <(find scripts tests -type f -name '*.sh' -print | sort)
 
           for file in runner/create runner/start-instance; do
             if [[ -f "$file" ]]; then
+              echo "syntax: ${file}"
               bash -n "$file"
             fi
           done
@@ -66,6 +68,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           while IFS= read -r file; do
+            echo "test: ${file}"
             bash "$file"
           done < <(find tests -type f -name '*.test.sh' -print | sort)
 
