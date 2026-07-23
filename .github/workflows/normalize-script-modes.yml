@@ -31,7 +31,7 @@ permissions:
   contents: write
 
 jobs:
-  validate-and-normalize:
+  shell-syntax:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -63,17 +63,48 @@ jobs:
             fi
           done
 
-      - name: Run manager regression tests
+  regression-tests:
+    if: github.actor != 'github-actions[bot]'
+    needs: shell-syntax
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test_file:
+          - tests/docker-cli-version-contract.test.sh
+          - tests/docker-socket-access.test.sh
+          - tests/legacy-entrypoints-contract.test.sh
+          - tests/no-proxy-contract.test.sh
+          - tests/runner-credential-isolation.test.sh
+          - tests/runner-restart-idempotency.test.sh
+          - tests/runner-version-pin.test.sh
+          - tests/runnerctl-doctor-host.test.sh
+          - tests/runnerctl-permissions.test.sh
+          - tests/runnerctl-status-contract.test.sh
+          - tests/workflow-actions-contract.test.sh
+    name: regression ${{ matrix.test_file }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Run regression test
         shell: bash
-        run: |
-          set -Eeuo pipefail
-          while IFS= read -r file; do
-            echo "test: ${file}"
-            bash "$file"
-          done < <(find tests -type f -name '*.test.sh' -print | sort)
+        run: bash "${{ matrix.test_file }}"
+
+  normalize-executable-modes:
+    if: github.event_name == 'push' && github.ref_name == 'main' && github.actor != 'github-actions[bot]'
+    needs: regression-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 1
+          show-progress: false
 
       - name: Mark command scripts executable in Git
-        if: github.event_name == 'push' && github.ref_name == 'main'
         shell: bash
         run: |
           set -Eeuo pipefail
