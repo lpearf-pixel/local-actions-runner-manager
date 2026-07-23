@@ -4,8 +4,15 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENTRYPOINT="${ROOT_DIR}/runner/entrypoint.sh"
 
-if ! grep -Eq 'chmod[[:space:]]+g\+rw[[:space:]]+\$socket|chmod[[:space:]]+g\+rw[[:space:]]+/var/run/docker\.sock|chmod[[:space:]]+660[[:space:]]+\$socket|chmod[[:space:]]+660[[:space:]]+/var/run/docker\.sock' "$ENTRYPOINT"; then
-  echo "Expected entrypoint to grant the socket group write access" >&2
+entrypoint_content="$(cat "$ENTRYPOINT")"
+
+if ! grep -Fq 'chmod g+rw "$socket"' <<<"$entrypoint_content"; then
+  echo 'Expected entrypoint to grant group read/write access to the quoted Docker socket variable' >&2
+  exit 1
+fi
+
+if grep -Eq 'chmod[[:space:]]+([[:digit:]]*)?6[[:digit:]]{2}|chmod[[:space:]]+777|chmod[[:space:]]+a\+w|chmod[[:space:]]+o\+w' <<<"$entrypoint_content"; then
+  echo 'Dangerous broad Docker socket chmod mode detected' >&2
   exit 1
 fi
 
