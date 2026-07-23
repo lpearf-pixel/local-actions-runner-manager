@@ -33,7 +33,7 @@ Key rules:
 
 Install Docker Desktop or Docker Engine on the computer that will execute jobs.
 
-Create a GitHub token that can manage repository self-hosted runners. Store it only in `.env` and never commit it.
+Create a GitHub token that can manage repository self-hosted runners. Store it only in `.env` and never commit it. See [Management Credential Lifecycle](docs/credential-lifecycle.md) for the management-token lifecycle and job-environment isolation rules.
 
 For a fine-grained personal access token, grant each target repository `Administration: Read and write`. For a classic token on a private repository, use the `repo` scope.
 
@@ -50,8 +50,8 @@ Edit the root `.env`:
 ```dotenv
 GITHUB_TOKEN=github_pat_xxx
 
-HTTP_PROXY=http://192.168.2.28:8001
-HTTPS_PROXY=http://192.168.2.28:8001
+HTTP_PROXY=http://proxy.example.local:8001
+HTTPS_PROXY=http://proxy.example.local:8001
 NO_PROXY=localhost,127.0.0.1,host.docker.internal
 
 RUNNER_GROUP=Default
@@ -60,7 +60,7 @@ RUNNER_EPHEMERAL=false
 RUNNER_LABELS=lan,docker,home
 ```
 
-The token and proxy are shared by all configured runner instances.
+The token and proxy are shared by all configured runner instances. `NO_PROXY` is passed to the runner container as both `NO_PROXY` and `no_proxy`; keep localhost, `127.0.0.1`, and `host.docker.internal` out of external proxies so Docker, local databases, and local APIs stay on the local host path.
 
 ## Recommended command interface
 
@@ -231,7 +231,7 @@ jobs:
   test:
     runs-on: [self-hosted, Linux, chan-shuo]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
       - run: uname -a
       - run: docker version
 ```
@@ -248,6 +248,7 @@ Do not repeatedly run local `chmod` as part of normal operation. Local permissio
 
 - Do not execute untrusted pull requests on a self-hosted runner.
 - Never commit `.env`, instance secrets, or GitHub tokens.
+- The management GitHub token is used only for registration, removal, and diagnostics; it is removed from the `run.sh` child environment before jobs run.
 - Mounting `/var/run/docker.sock` gives jobs powerful access to the Docker host.
 - Prefer a dedicated computer or OS account.
 - Restrict runner workflows to trusted branches and repositories.
@@ -255,3 +256,5 @@ Do not repeatedly run local `chmod` as part of normal operation. Local permissio
 ## Network
 
 No inbound port is required. The runner needs outbound HTTPS to GitHub and any package or container registries used by workflows. Other LAN computers only push code to GitHub; they do not connect directly to the runner.
+
+Container runners usually reach host services through `host.docker.internal`. Physical-machine runners usually reach local services through `127.0.0.1`. Keep both values in `NO_PROXY` / `no_proxy` so local Docker, database, and API traffic does not accidentally leave through an external proxy.
