@@ -21,6 +21,7 @@ Key rules:
 - One isolated Compose project per GitHub repository
 - One shared root `.env` for GitHub token and proxy settings
 - One `instances/<name>.env` file per runner instance
+- Safe scaling helpers: `add-worker`, `scale`, `downscale`, `workers`, `pool-join`, and `pool-leave`
 - `amd64` and `arm64` runner images
 - Automatic runner registration and graceful unregistration
 - Docker socket support for workflows that build containers
@@ -140,35 +141,52 @@ bash ./runnerctl status
 
 ## Parallel runners for one repository
 
-To run multiple jobs for the same repository, create additional instance files with the same `GITHUB_REPOSITORY` and shared project label, but a unique `RUNNER_NAME`.
+For complex work, start with isolated workers, then explicitly join the shared pool after verification. Full guidance is in [Safe Runner Scaling Guide](docs/runner-scaling.md).
 
-```text
-instances/community.env
-instances/community-w01.env
+Create a test-only worker that cannot receive normal `community` jobs:
+
+```bash
+bash ./runnerctl add-worker community w01 --start
 ```
 
-Example worker instance:
+This creates an isolated label:
 
 ```dotenv
-GITHUB_REPOSITORY=lpearf-pixel/community-selection-miniapp
-RUNNER_NAME=home-community-w01
-RUNNER_LABELS=lan,docker,home,community,community-w01
-RUNNER_GROUP=Default
-RUNNER_WORKDIR=_work
-RUNNER_EPHEMERAL=false
+RUNNER_LABELS=lan,docker,home,community-w01
 ```
 
-Both `community` and `community-w01` can receive jobs that target the shared label:
-
-```yaml
-runs-on: [self-hosted, Linux, community]
-```
-
-Use the unique label only when intentionally pinning a job for debugging:
+Target it explicitly while testing:
 
 ```yaml
 runs-on: [self-hosted, Linux, community-w01]
 ```
+
+After the worker is safe for shared jobs, join the pool:
+
+```bash
+bash ./runnerctl pool-join community-w01 community
+bash ./runnerctl restart community-w01
+```
+
+Or create new workers already joined:
+
+```bash
+bash ./runnerctl scale community 3 --join-pool --start
+```
+
+Shrink back to the base runner while preserving worker configuration:
+
+```bash
+bash ./runnerctl downscale community 1 --stop-only
+```
+
+Remove worker configuration only after verification:
+
+```bash
+bash ./runnerctl downscale community 1 --remove-config --force
+```
+
+Heavy E2E jobs that use fixed ports, shared Docker resources, or local databases should stay on isolated labels until workflow-level resource isolation is verified.
 
 ## Cleanup and diagnostics
 
