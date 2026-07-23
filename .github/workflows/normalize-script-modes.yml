@@ -80,6 +80,7 @@ jobs:
           - tests/runner-version-pin.test.sh
           - tests/runnerctl-doctor-host.test.sh
           - tests/runnerctl-permissions.test.sh
+          - tests/runnerctl-scaling-contract.test.sh
           - tests/runnerctl-status-contract.test.sh
           - tests/workflow-actions-contract.test.sh
     name: regression ${{ matrix.test_file }}

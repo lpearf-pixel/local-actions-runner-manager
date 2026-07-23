@@ -27,45 +27,52 @@ Rules:
 
 - `GITHUB_REPOSITORY` selects the GitHub repository that receives the runner.
 - `RUNNER_NAME` must be unique across concurrently running instances.
-- `RUNNER_LABELS` should include one shared project label, such as `community`, so workflows can target the pool.
-- Extra per-instance labels, such as `community-w01`, are useful for debugging or pinning a workflow to a single runner.
+- `RUNNER_LABELS` should include one shared project label, such as `community`, only when a workflow may safely target a pool.
+- Extra per-instance labels, such as `community-w01`, are useful for debugging, isolated validation, or heavy jobs that should not automatically enter the shared pool.
 
 ## Scaling pattern
 
-For two runners serving the same repository:
+Use [Safe Runner Scaling Guide](runner-scaling.md) for command examples.
 
-```text
-instances/community.env
-instances/community-w01.env
+Start with an isolated worker:
+
+```bash
+bash ./runnerctl add-worker community w01 --start
 ```
 
-Use the same repository and shared label, but unique runner names.
+The isolated worker receives only its worker label:
 
 ```dotenv
-# instances/community.env
-GITHUB_REPOSITORY=lpearf-pixel/community-selection-miniapp
-RUNNER_NAME=home-community-runner
-RUNNER_LABELS=lan,docker,home,community
+RUNNER_LABELS=lan,docker,home,community-w01
 ```
 
-```dotenv
-# instances/community-w01.env
-GITHUB_REPOSITORY=lpearf-pixel/community-selection-miniapp
-RUNNER_NAME=home-community-w01
-RUNNER_LABELS=lan,docker,home,community,community-w01
+A workflow can target the isolated worker for validation:
+
+```yaml
+runs-on: [self-hosted, Linux, community-w01]
 ```
 
-A workflow can target the shared pool:
+Join the shared pool only after the workload is safe to run concurrently:
+
+```bash
+bash ./runnerctl pool-join community-w01 community
+bash ./runnerctl restart community-w01
+```
+
+After joining, workflows can target the shared pool:
 
 ```yaml
 runs-on: [self-hosted, Linux, community]
 ```
 
-Or a specific runner during debugging:
+Scale and downscale helpers keep the base instance protected:
 
-```yaml
-runs-on: [self-hosted, Linux, community-w01]
+```bash
+bash ./runnerctl scale community 3 --join-pool --start
+bash ./runnerctl downscale community 1 --stop-only
 ```
+
+Heavy E2E jobs with fixed ports, shared Docker resources, or local databases should stay on isolated labels until the workflow uses run-specific resource names and ports.
 
 ## Hosted runner vs local runner
 
@@ -135,8 +142,9 @@ bash ./runnerctl doctor <instance>
 | `Cannot connect to the Docker daemon` | Host Docker Desktop stopped or crashed | `bash ./runnerctl doctor-host` |
 | `API returned a 400 Bad Request` from container Docker CLI | Runner container Docker CLI is incompatible with host Docker daemon | Rebuild the runner image after pulling the pinned CLI fix |
 | `Cannot configure the runner because it is already configured` | Runner state persisted across container restart | Pull latest manager; current entrypoint reuses existing `.runner/.credentials` |
-| Only one job runs at a time | Only one runner instance exists for that repository | Add another `instances/<project>-w01.env` with the same shared label |
+| Only one job runs at a time | Only one runner instance exists for that repository | Add another `instances/<project>-w01.env` with `bash ./runnerctl add-worker` |
 | Workflow never lands on the new instance | Labels do not match `runs-on` | Check `RUNNER_LABELS` in `bash ./runnerctl status` |
+| Heavy E2E jobs collide | Workers joined the shared pool before workflow resource isolation exists | Use isolated worker labels or workflow concurrency |
 | Local database or API calls route through the proxy | Missing `NO_PROXY` / `no_proxy` local bypass | Check merged Compose config and runner container environment |
 | Management PAT appears inside a job environment | Credential isolation regression | Stop using that image and inspect `runner/entrypoint.sh` before restarting runners |
 
@@ -162,3 +170,4 @@ Before adding `runs-on: [self-hosted, ...]` to another repository, confirm:
 - `bash ./runnerctl doctor-host` passes.
 - `bash ./runnerctl doctor <instance>` passes after the container starts.
 - The workflow does not require untrusted pull request execution on a Docker-socket runner.
+- Heavy jobs either use isolated runner labels or have proven run-specific Docker names, volumes, networks, and ports.
