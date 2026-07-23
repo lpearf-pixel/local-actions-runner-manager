@@ -6,7 +6,7 @@ RUNNERCTL_SOURCE="${ROOT_DIR}/runnerctl"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/runnerctl-permissions.XXXXXX")"
 trap 'chmod -R u+rwX "$TMP_ROOT" 2>/dev/null || true; rm -rf "$TMP_ROOT"' EXIT
 
-if ! grep -Eq 'if[[:space:]]+\[\[[[:space:]]+![[:space:]]+-r[[:space:]]+"\$file"[[:space:]]+\]\][[:space:]]*;?[[:space:]]*then' "$RUNNERCTL_SOURCE"; then
+if ! grep -Fq 'if [[ ! -r "$file" ]]; then' "$RUNNERCTL_SOURCE"; then
   echo "Expected status to check unreadable instance files before reading them" >&2
   exit 1
 fi
